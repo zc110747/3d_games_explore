@@ -107,8 +107,10 @@ export const RANGE_STYLE = Object.freeze({
   attackColor: 0xff2b1e,
   attackOpacity: 0.58,
   y: 0.06,
+  pathY: 0.10,          // P5：路径折线略高于范围色块，避免同高度闪烁
   cellScale: 0.94,
   maxInstances: 300,
+  maxPathPoints: 64,    // P5：移动路径最多 64 个点（32x32 地图最长折线也够）
   source: 'P4 §9/§10：只显示原版 qi()/Vo() 给出的合法格子',
 });
 

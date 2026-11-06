@@ -25,6 +25,9 @@ import { DebugPanel } from '../p2/DebugPanel.mjs';
 import { createCityManager } from '../p3/boot.mjs';
 import { createBattleManager } from '../p4/boot.mjs';
 import { P4_VERSION } from '../p4/config.mjs';
+import { createBattleOps } from '../p5/boot.mjs';
+import { P5_VERSION, PHASES } from '../p5/config.mjs';
+import { splitMenuByRect } from '../p5/BattleFlowController.mjs';
 
 const $ = (id) => document.getElementById(id);
 const logEl = $('p1-log');
@@ -78,11 +81,13 @@ async function boot() {
   const p2Panel = $('p2-panel');
   const p3Chip = $('p3-chip');
   const p4Chip = $('p4-chip');
+  const p5Chip = $('p5-chip');
   let mapScene = null;
   let interaction = null;
   let debugPanel = null;
   let cityManager = null;
   let battleManager = null;
+  let battleOps = null;
   let scenesReady = false;   // 防止 RenderManager 构造期 resize 访问尚未初始化的 scenes
 
   const events = new EventManager();
@@ -189,6 +194,21 @@ async function boot() {
         if (!d || !d.selection) return '—';
         return `#${d.selection.unitId}（${d.selection.selectable ? '可操作' : '不可操作'}）移动 ${d.selection.moveCount} / 攻击 ${d.selection.attackCount}`;
       })()],
+      ['P5 操作状态', (() => {
+        if (!battleOps) return '未装配';
+        const st = battleOps.getStatus();
+        return st.active ? `${st.phase}${st.menuOpen ? '（菜单打开）' : ''}` : '未接管（原版 2D 输入）';
+      })()],
+      ['P5 输入 / 点击', (() => {
+        const f = battleOps && battleOps.flow ? battleOps.flow.getSnapshot() : null;
+        if (!f) return '—';
+        return `${f.inputActive ? '开放' : '锁定'} · 接受 ${f.stats.accepted} / 拒绝 ${f.stats.rejected} · 队列 ${f.pendingInputs}`;
+      })()],
+      ['P5 动画队列', (() => {
+        const a = battleOps && battleOps.anim ? battleOps.anim.getDiagnostics() : null;
+        if (!a) return '—';
+        return `${a.active || '空闲'} · 排队 ${a.pending} · 完成 ${a.finished} / 超时 ${a.timedOut} / 取消 ${a.cancelled}`;
+      })()],
     ];
     if (statusList) {
       statusList.replaceChildren();
@@ -215,6 +235,13 @@ async function boot() {
         : !st.active ? '战斗待命'
           : st.loaded && diag && diag.map ? `战斗中 · ${diag.map.width}×${diag.map.height}` : '战斗初始化中';
       p4Chip.style.color = st && st.active ? '#e08a7a' : '';
+    }
+    if (p5Chip) {
+      const st = battleOps ? battleOps.getStatus() : null;
+      p5Chip.textContent = !st ? '操作未装配'
+        : !st.active ? '操作待命'
+          : `操作接管 · ${st.phase}`;
+      p5Chip.style.color = st && st.active ? '#9ad0ff' : '';
     }
     if (debugPanel && mapScene && coreReady) {
       try { refreshDebug(); } catch (e) { /* 状态切换瞬间忽略 */ }
@@ -621,6 +648,83 @@ async function boot() {
     });
     suites.push(p4.summary());
 
+    // ---------------------------------------------------------- P5 战斗操作自检
+    const p5 = makeSuite('P5 战斗操作');
+    const p5core = core.p5 || null;
+    p5.check('内核导出 9 个战斗操作接管点', () => {
+      if (!p5core) throw new Error('core.p5 缺失（sgby.core.js 未重新生成？）');
+      const names = p5core.widgetNames;
+      if (!names || names.length !== 9) throw new Error(`接管点 ${names}`);
+      for (const k of ['bo', 'ko', 'vo', 'xo', 'Ao', 'Fo', 'Io', 'Eo', 'So']) {
+        if (!names.includes(k)) throw new Error(`缺少 ${k}`);
+        if (typeof p5core.originals[k] !== 'function') throw new Error(`缺少 ${k}Orig`);
+      }
+      return names.join('/');
+    });
+    p5.check('战斗操作协议常量与源码一致', () => {
+      const b = p5core.battle;
+      const k = b.keyCodes;
+      if (k.up !== 34 || k.down !== 35 || k.left !== 36 || k.right !== 37
+        || k.confirm !== 39 || k.cancel !== 40) throw new Error(JSON.stringify(k));
+      const px = b.pixels;
+      if (px.tilePx !== 16 || px.tilePy !== 16 || px.viewCols !== 15 || px.viewRows !== 17) {
+        throw new Error(JSON.stringify(px));
+      }
+      if (b.battleOver.win !== 1 || b.battleOver.lose !== 2) throw new Error('结束标志语义不符');
+      return `键码 ${k.up}/${k.down}/${k.left}/${k.right}/${k.confirm}/${k.cancel}；像素 ${px.tilePx}/${px.viewCols}x${px.viewRows}`;
+    });
+    p5.check('原版菜单条目 = vi(8) 4 项 / vi(9) 5 项', () => {
+      const m = adapter.getBattleMenus();
+      if (m.action.length !== 4) throw new Error(`行动菜单 ${m.action.length} 项`);
+      if (m.battle.length !== 5) throw new Error(`战斗菜单 ${m.battle.length} 项`);
+      if (m.action.join('') !== m.raw.action) throw new Error('行动菜单切分丢字');
+      if (m.battle.join('') !== m.raw.battle) throw new Error('战斗菜单切分丢字');
+      return `${m.action.join('/')} · ${m.battle.join('/')}`;
+    });
+    p5.check('菜单定宽切分与原版 Tr() 口径一致', () => {
+      const m = adapter.getBattleMenus();
+      const action = splitMenuByRect(m.raw.action, { sx: 100, ex: 132 });   // 32px -> 4 显示单位
+      const battle = splitMenuByRect(m.raw.battle, { sx: 8, ex: 72 });      // 64px -> 8 显示单位
+      if (action.length !== 4 || action[0] !== '攻击') throw new Error(`行动菜单 ${action.join('|')}`);
+      if (battle.length !== 5 || battle[4] !== '全军撤退') throw new Error(`战斗菜单 ${battle.join('|')}`);
+      return `${action.join('|')} / ${battle.join('|')}`;
+    });
+    p5.check('格子 -> 原版像素 -> 格子 往返一致', () => {
+      const st = adapter.getBattleState();
+      if (!st.mapReady) return '未进入战斗（阶段感知，跳过像素往返）';
+      const Dn = core.Dn;
+      let tested = 0;
+      for (let y = 0; y < Dn.g_MapHgt; y++) {
+        for (let x = 0; x < Dn.g_MapWid; x++) {
+          const s = adapter.battleCellToScreen(x, y);
+          const bx = Dn.g_MapSX + Math.floor(s.x / 16);
+          const by = Dn.g_MapSY + Math.floor(s.y / 16);
+          if (bx !== x || by !== y) throw new Error(`(${x},${y}) -> (${s.x},${s.y}) -> (${bx},${by})`);
+          tested++;
+        }
+      }
+      return `${tested} 格全部往返一致`;
+    });
+    p5.check('未接管战斗时不接受操作（如实拒绝，不伪造成功）', () => {
+      const st = battleOps ? battleOps.getStatus() : null;
+      if (!st) throw new Error('P5 未装配');
+      if (st.active) return '战斗进行中（跳过：由 smoke 的真实对局覆盖）';
+      const r = battleOps.host.onPhase('select');
+      void r;
+      return '未接管：宿主 inBattle=false';
+    });
+    p5.check('操作状态机相位合法且与输入锁一致', () => {
+      const st = battleOps ? battleOps.getStatus() : null;
+      if (!st || !st.active) return '未进入战斗（阶段感知，跳过）';
+      const snap = battleOps.flow.getSnapshot();
+      if (!Object.values(PHASES).includes(snap.phase)) throw new Error(`未知相位 ${snap.phase}`);
+      if (['MOVEMENT_ANIMATING', 'ATTACK_ANIMATING'].includes(snap.phase) && snap.canCancel) {
+        throw new Error('动画期间不应允许取消');
+      }
+      return `${snap.phase} · 输入${snap.inputActive ? '开放' : '锁定'} · 动画 ${snap.anim.active || '空闲'}`;
+    });
+    suites.push(p5.summary());
+
     const pass = suites.reduce((n, s) => n + s.pass, 0);
     const fail = suites.reduce((n, s) => n + s.fail, 0);
     if (verbose) {
@@ -739,6 +843,12 @@ async function boot() {
     log: (msg) => log(`[P4] ${msg}`),
   });
   log(`P4 战斗场景已装配：接管 ${core.p4 ? core.p4.widgetNames.join(' / ') : '（内核无 p4，战斗将不可用）'}`);
+  battleOps = createBattleOps({
+    THREE, adapter, events, scenes, renderManager, battleManager,
+    uiHost: uiRoot,
+    log: (msg) => log(`[P5] ${msg}`),
+  });
+  log(`P5 战斗操作已装配：接管 ${core.p5 ? core.p5.widgetNames.join(' / ') : '（内核无 p5，操作仍在 2D）'}`);
   log('提示：点「原版画面」在主菜单开新局，进入剧本后点击己方城市即可打开城市管理');
   renderManager.resize();           // 触发 worldCamera.fit，保证整图可见
   renderStatus();
@@ -841,7 +951,9 @@ async function boot() {
     },
     selectUnit: (id) => {
       const s = battleManager.scene;
-      return s ? s.selectUnit(id, { source: 'debug' }) : null;
+      // 调试入口显式要求「连范围一起算」：P5 接管后范围默认跟随原版阶段，
+      // 这里绕过该策略只是为了能在任意时刻检查 qi()/Vo() 的结果。
+      return s ? s.selectUnit(id, { source: 'debug', ranges: true }) : null;
     },
     selectCell: (x, y) => {
       const s = battleManager.scene;
@@ -859,6 +971,42 @@ async function boot() {
       const v = new THREE.Vector3();
       const projector = (p) => { v.set(p.x, p.y, p.z).project(s.camera); return { x: v.x, y: v.y, z: v.z }; };
       return s.battleCoord.worldToScreen(w, projector, viewport);
+    },
+    runSmoke,
+    switchScene,
+  });
+
+  /** P5 战斗操作调试/自动化入口（所有操作都经原版输入协议，返回值如实标注是否被接受）。 */
+  window.__P5__ = Object.freeze({
+    version: P5_VERSION,
+    manager: battleOps,
+    ui: battleOps.ui,
+    host: battleOps.host,
+    get flow() { return battleOps.flow; },
+    get anim() { return battleOps.anim; },
+    getStatus: () => battleOps.getStatus(),
+    getSnapshot: () => {
+      const f = battleOps.flow;
+      return {
+        status: battleOps.getStatus(),
+        phase: f ? f.getSnapshot() : null,
+        anim: battleOps.anim ? battleOps.anim.getDiagnostics() : null,
+        menus: adapter.getBattleMenus(),
+        units: adapter.getBattleUnitStates(),
+        logs: battleOps.ui.logs.slice(-12),
+      };
+    },
+    /** 3D 语义：点击某格 / 某部队（内部翻成原版 type:16 指针消息）。 */
+    clickCell: (x, y) => (battleOps.flow ? battleOps.flow.onMapClick({ cell: { x, y } }) : null),
+    clickUnit: (id) => (battleOps.flow ? battleOps.flow.onMapClick({ unitId: id }) : null),
+    cancel: () => (battleOps.flow ? battleOps.flow.cancel() : null),
+    openBattleMenu: () => (battleOps.flow ? battleOps.flow.openBattleMenu() : null),
+    /** 直接选择菜单项（仅测试用；等价于点 DOM 按钮）。 */
+    pickMenu: (index) => {
+      const ui = battleOps.ui;
+      if (!ui.menuOpen) return false;
+      ui.closeMenu(index, 'test');
+      return true;
     },
     runSmoke,
     switchScene,

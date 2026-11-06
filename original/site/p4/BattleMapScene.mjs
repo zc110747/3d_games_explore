@@ -19,6 +19,7 @@ import { BattleMapRenderer } from './BattleMapRenderer.mjs';
 import { BattleUnitRenderer } from './BattleUnitRenderer.mjs';
 import { BattleRangeRenderer } from './BattleRangeRenderer.mjs';
 import { BattleInteraction } from './BattleInteraction.mjs';
+import { buildVisualPath } from '../p5/VisualPath.mjs';
 
 export class BattleMapScene extends BattleScene {
   constructor(deps) {
@@ -36,8 +37,19 @@ export class BattleMapScene extends BattleScene {
     this.interaction = null;
     this.hud = null;
     this.selection = null;
+    // P5：战斗操作状态机（由 p5/boot.mjs 注入）+ 动画管理器
+    this.flow = null;
+    this.anim = null;
+    this._hoverPathShown = false;
     this.lastLoad = null;
     this.scene.name = 'p4-battle-map';
+  }
+
+  /** P5：装配操作层。必须在地图装载之后调用。 */
+  attachFlow(flow, anim) {
+    this.flow = flow || null;
+    this.anim = anim || null;
+    return this;
   }
 
   _build() {
@@ -122,9 +134,12 @@ export class BattleMapScene extends BattleScene {
       getCamera: () => this.camera,
       isActive: () => !!(this.renderManager && this.renderManager.isRunning),
       callbacks: {
-        onUnitClick: (unitId) => this.selectUnit(unitId, { source: 'click' }),
-        onCellClick: (cell) => this.selectCell(cell),
+        // P5：点击先交给操作状态机（它决定是否把点击翻成原版输入），
+        // 无论是否被接受，都同步一次表现层选中，保证 HUD 与模型一致。
+        onUnitClick: (unitId) => this.handlePick({ unitId, source: 'click' }),
+        onCellClick: (cell) => this.handlePick({ cell, source: 'click' }),
         onMiss: () => this.setCursor(null),
+        onHover: (hit) => this.handleHover(hit),
       },
     });
     this.interaction.setGround(ground);
@@ -139,6 +154,7 @@ export class BattleMapScene extends BattleScene {
     if (hudWidth > 0) this.battleCamera.panByPixels(this.camera, Math.round(hudWidth / 2) + 8, 0);
 
     this.selection = null;
+    this._hoverPathShown = false;
     this.lastLoad = {
       ok: true, mapId: map.mapId, width: map.width, height: map.height,
       frames: this.mapRenderer.stats.frames, props: this.mapRenderer.stats.props,
@@ -149,6 +165,7 @@ export class BattleMapScene extends BattleScene {
   }
 
   clearBattle() {
+    if (this.anim) this.anim.cancelAll('scene-clear');
     if (this.interaction) { this.interaction.unbind(); this.interaction = null; }
     if (this.mapRenderer) { this.mapRenderer.dispose(); this.mapRenderer = null; }
     if (this.unitRenderer) { this.unitRenderer.dispose(); this.unitRenderer = null; }
@@ -163,7 +180,14 @@ export class BattleMapScene extends BattleScene {
   }
 
   // ------------------------------------------------------------------ 选中
-  selectUnit(unitId, { source = 'api' } = {}) {
+  /**
+   * 表现层选中（只影响高亮与 HUD，不改游戏状态）。
+   *
+   * P5：`ranges` 默认由「是否存在操作状态机」决定 ——
+   * 有 P5 时范围显示完全跟随原版协程所处阶段（由 BattleFlowController 驱动），
+   * 避免「点谁就给谁显示范围」这种前端自造的可操作性暗示。
+   */
+  selectUnit(unitId, { source = 'api', ranges = !this.flow } = {}) {
     if (!this.unitRenderer) return { ok: false, reason: '战斗场景未加载' };
     const unit = this.adapter.getBattleUnit(unitId);
     this.unitRenderer.setSelected(unitId);
@@ -172,12 +196,12 @@ export class BattleMapScene extends BattleScene {
     let attack = null;
     if (unit.present) {
       selectable = this.adapter.canSelectUnit(unitId);
-      if (selectable) {
+      if (ranges && selectable) {
         move = this.adapter.getMovementRange(unitId);
         attack = this.adapter.getAttackRange(unitId);
         this.rangeRenderer.showMove(move.available ? move.cells : []);
         this.rangeRenderer.showAttack(attack.available ? attack.cells : []);
-      } else {
+      } else if (ranges) {
         this.rangeRenderer.clear();
       }
     } else {
@@ -191,14 +215,112 @@ export class BattleMapScene extends BattleScene {
       attackReason: attack && !attack.available ? attack.reason : null,
       _move: move && move.available ? move.cells : [],
       _attack: attack && attack.available ? attack.cells : [],
+      _moveField: move && move.available ? move.raw : null,
+      _moveOrigin: move && move.available ? move.origin : null,
     };
     if (unit.present) this.setCursor({ x: unit.x, y: unit.y });
     this.refreshHUD();
     this.events.emit(EVENTS.UNIT_SELECTED, {
       unitId, selectable, source: 'presentation(P4)',
       moveCells: this.selection.moveCount, attackCells: this.selection.attackCount,
-    }, { dedupeKey: `p4unit:${unitId}:${source}` });
+    }, { dedupeKey: `p4unit:${unitId}:${source}:${Date.now()}` });
     return this.selection;
+  }
+
+  /** P5：点击统一入口。先表现层选中，再问操作状态机是否接受为原版输入。 */
+  handlePick({ unitId = null, cell = null, source = 'click' } = {}) {
+    if (unitId !== null) this.selectUnit(unitId, { source, ranges: !this.flow });
+    else if (cell) this.selectCell(cell);
+    if (!this.flow) return { accepted: false, reason: '未装配 P5 操作状态机' };
+    const r = this.flow.onMapClick({ unitId, cell });
+    if (!r.accepted && source === 'click') {
+      this.hud && this.hud.setChip(r.reason || '当前不可操作');
+    }
+    return r;
+  }
+
+  /**
+   * P5：悬停预览。只在「已选中部队、正在选移动目标」时显示视觉路径，
+   * 路径来自原版 qi() 距离场（见 p5/VisualPath.mjs），不产生任何判定。
+   */
+  handleHover(hit) {
+    if (!this.flow || !this.rangeRenderer) return;
+    const phase = this.flow.phase;
+    const sel = this.selection;
+    const isMovePhase = phase === 'UNIT_SELECTED';
+    if (!isMovePhase || !sel || sel.kind !== 'unit') {
+      if (this._hoverPathShown) { this.rangeRenderer.clearPath(); this._hoverPathShown = false; }
+      return;
+    }
+    const cell = hit && hit.cell;
+    if (!cell) {
+      if (this._hoverPathShown) { this.rangeRenderer.clearPath(); this._hoverPathShown = false; }
+      return;
+    }
+    const inRange = (sel._move || []).some((c) => c.x === cell.x && c.y === cell.y);
+    if (!inRange || !sel._moveField) {
+      if (this._hoverPathShown) { this.rangeRenderer.clearPath(); this._hoverPathShown = false; }
+      return;
+    }
+    const u = this.adapter.getBattleUnit(sel.unitId);
+    const path = buildVisualPath({
+      field: sel._moveField, origin: sel._moveOrigin,
+      from: { x: u.x, y: u.y }, to: { x: cell.x, y: cell.y },
+      width: 15, blockCost: 128,
+    });
+    this.rangeRenderer.showPath(path.cells);
+    this._hoverPathShown = true;
+    this.setCursor(cell);
+  }
+
+  /** P5：清空选中与所有范围（原版取消选择时调用）。 */
+  clearBattleSelection() {
+    if (this.unitRenderer) this.unitRenderer.setSelected(null);
+    if (this.rangeRenderer) this.rangeRenderer.clear();
+    this.selection = null;
+    this._hoverPathShown = false;
+    this.refreshHUD();
+  }
+
+  /** P5：显示原版 Vo() 刚算出的攻击/计谋范围（cells 来自 g_FgtAtkRng）。 */
+  showAttackPreview(cells, info = {}) {
+    if (!this.rangeRenderer) return 0;
+    this.rangeRenderer.showMove([]);
+    const n = this.rangeRenderer.showAttack(cells || []);
+    this._attackPreview = { count: n, kind: info.kind, param: info.param };
+    this.refreshHUD();
+    return n;
+  }
+
+  /** P5：阶段切换时调整范围/高亮（不触发任何原版操作）。 */
+  onBattlePhaseChanged(phase, detail = {}) {
+    if (!this.rangeRenderer) return;
+    if (phase === 'SELECT') {
+      this.rangeRenderer.clear();
+      this.unitRenderer && this.unitRenderer.setSelected(null);
+      this._hoverPathShown = false;
+    } else if (phase === 'UNIT_SELECTED' && detail.unitId !== undefined) {
+      // 移动范围：重新取一次原版 qi() 结果（与 ea() 在 2D 上画的完全同源）
+      const move = this.adapter.getMovementRange(detail.unitId);
+      this.rangeRenderer.showMove(move.available ? move.cells : []);
+      this.rangeRenderer.showAttack([]);
+      if (this.selection) {
+        this.selection._move = move.available ? move.cells : [];
+        this.selection._moveField = move.available ? move.raw : null;
+        this.selection._moveOrigin = move.available ? move.origin : null;
+        this.selection.moveCount = move.available ? move.cellCount : 0;
+      }
+    } else if (phase === 'MOVEMENT_ANIMATING' || phase === 'MOVEMENT_PENDING') {
+      this.rangeRenderer.clear();
+      this._hoverPathShown = false;
+    } else if (phase === 'ACTION_MENU' || phase === 'ACTION_COMPLETED') {
+      this.rangeRenderer.clear();
+      this._hoverPathShown = false;
+    } else if (phase === 'BATTLE_FINISHED') {
+      this.rangeRenderer.clear();
+      this.unitRenderer && this.unitRenderer.setSelected(null);
+    }
+    this.refreshHUD(`phase-${phase}`);
   }
 
   selectCell(cell) {
@@ -223,9 +345,14 @@ export class BattleMapScene extends BattleScene {
     if (this.selection && this.selection.kind === 'unit') {
       const u = this.adapter.getBattleUnit(this.selection.unitId);
       if (!u.present || u.state === 8) {
-        this.unitRenderer.setSelected(null);
-        this.rangeRenderer.clear();
-        this.selection = null;
+        if (!(this.unitRenderer && this.unitRenderer.isHeld && this.unitRenderer.isHeld(this.selection.unitId))) {
+          this.unitRenderer.setSelected(null);
+          this.rangeRenderer.clear();
+          this.selection = null;
+        }
+      } else if (this.flow) {
+        // P5：范围由操作状态机按原版阶段维护，同步时只刷新 HUD，绝不清空正在用的范围
+        this.selection.selectable = this.adapter.canSelectUnit(this.selection.unitId);
       } else {
         this.selectUnit(this.selection.unitId, { source: 'sync' });
       }
@@ -281,6 +408,9 @@ export class BattleMapScene extends BattleScene {
   update(dt) {
     this.elapsed += dt;
     this.frameCount++;
+    // P5：动画由渲染循环统一驱动（不新建任何独立循环）
+    if (this.anim) this.anim.update(dt);
+    if (this.flow) this.flow.trackEnemyPhase(dt);
     if (this.unitRenderer) this.unitRenderer.update(dt);
   }
 
@@ -318,6 +448,8 @@ export class BattleMapScene extends BattleScene {
         : null,
       cursor: this.cursor,
       subscriptions: this._subs.length,
+      flow: this.flow ? this.flow.getSnapshot() : null,
+      animation: this.anim ? this.anim.getDiagnostics() : null,
     };
   }
 

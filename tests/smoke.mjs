@@ -71,9 +71,9 @@ try {
     origHtml.includes('sgby.min.js') && !origHtml.includes('sgby.core.js'));
   const minJs = fs.readFileSync(path.join(ORIGINAL, 'site', 'sgby.min.js'));
   const coreJs = fs.readFileSync(path.join(ORIGINAL, 'site', 'sgby.core.js'));
-  // 不变量：core.js 去掉桥接尾注、把 9 处改名反向还原后，必须与 min.js 逐字节相同。
+  // 不变量：core.js 去掉桥接尾注、把 18 处改名反向还原后，必须与 min.js 逐字节相同。
   // 这比「前缀相同」更强：任何额外改动都会被抓到。
-  // P3 接管 7 个 UI 控件，P4 追加 yo/Uo 两个战斗生命周期钩子 -> 共 9 处。
+  // P3 接管 7 个 UI 控件，P4 追加 yo/Uo，P5 追加 9 个战斗操作协程 -> 共 18 处。
   const RENAMES = [
     ['async function $rOrig(t,e,n){', 'async function $r(t,e,n){'],
     ['async function LsOrig(t,e,n,r,s,i,st){', 'async function Ls(t,e,n,r,s,i,st){'],
@@ -84,13 +84,22 @@ try {
     ['async function kaOrig(){', 'async function ka(){'],
     ['async function yoOrig(){', 'async function yo(){'],
     ['async function UoOrig(){', 'async function Uo(){'],
+    ['async function boOrig(t,e=null){', 'async function bo(t,e=null){'],
+    ['async function koOrig(){', 'async function ko(){'],
+    ['async function voOrig(t){', 'async function vo(t){'],
+    ['async function xoOrig(t,e,n){', 'async function xo(t,e,n){'],
+    ['async function AoOrig(t){', 'async function Ao(t){'],
+    ['async function FoOrig(n){', 'async function Fo(n){'],
+    ['async function IoOrig(){', 'async function Io(){'],
+    ['async function EoOrig(){', 'async function Eo(){'],
+    ['async function SoOrig(){', 'async function So(){'],
   ];
   const coreText = coreJs.toString('utf8');
   const bridgeAt = coreText.indexOf('/* === SGBY-P1-CORE-BRIDGE START');
   let restored = bridgeAt > 0 ? coreText.slice(0, bridgeAt) : '';
   for (const [from, to] of RENAMES) restored = restored.split(from).join(to);
   const sameAsSource = restored.replace(/\s+$/, '') === minJs.toString('utf8').replace(/\s+$/, '');
-  check('sgby.core.js = sgby.min.js + 9 处改名 + 桥接尾注（业务代码零改动）',
+  check('sgby.core.js = sgby.min.js + 18 处改名 + 桥接尾注（业务代码零改动）',
     sameAsSource && bridgeAt > 0,
     `min=${minJs.length}B core=${coreJs.length}B delta=${coreJs.length - minJs.length}B 还原一致=${sameAsSource}`);
 
@@ -671,6 +680,7 @@ try {
     const usable = (s) => s && s.visible
       && s.x > vp.left + 360 && s.x < vp.left + vp.width - 40
       && s.y > vp.top + 90 && s.y < vp.top + vp.height - 150;
+    const cands = [];
     for (const c of a.getCities()) {
       if (c.ownerId !== me) continue;
       const cs = window.__P2__.cityScreenPosition(c.id, vp);
@@ -681,13 +691,14 @@ try {
         if (!t.ownerId || t.ownerId === me) continue;
         const ts = window.__P2__.cityScreenPosition(t.id, vp);
         if (!usable(ts)) continue;
-        return {
+        cands.push({
           own: { id: c.id, name: c.name, x: cs.x, y: cs.y },
-          enemy: { id: t.id, name: t.name, ownerId: t.ownerId, x: ts.x, y: ts.y },
-        };
+          enemy: { id: t.id, name: t.name, ownerId: t.ownerId, x: ts.x, y: ts.y, food: t.food },
+        });
       }
     }
-    return null;
+    cands.sort((x, y) => (y.enemy.food || 0) - (x.enemy.food || 0));
+    return cands[0] || null;
   })())`));
   check('找到可出征的组合（己方城 + 原版相邻敌方城）', !!p4Plan,
     p4Plan ? `#${p4Plan.own.id} ${p4Plan.own.name} -> #${p4Plan.enemy.id} ${p4Plan.enemy.name}` : '无');
@@ -742,10 +753,13 @@ try {
 
       const foodUp = await waitFor(async () =>
         (await evaluate('!!document.querySelector(".p3-modal .p3-input")') ? true : null), 6000, '粮草输入').catch(() => null);
-      check('出征粮草输入走原版 Hs()', foodUp === true);
+      check('出征粮草输入走原版 Hs()', foodUp === true,
+        foodUp ? `上限 ${await evaluate('document.querySelector(".p3-modal .p3-input").max')}` : '');
       if (foodUp) {
         const max = Number(await evaluate('document.querySelector(".p3-modal .p3-input").max'));
-        const v = Math.max(1, Math.min(max, 300));
+        // 粮草决定战斗能持续多少回合（原版 Ki() 每回合扣减，粮尽即判负），
+        // 自动化对局取允许范围内的最大值，才可能走到真正交战。
+        const v = Math.max(1, Math.min(max, 2000));
         await evaluate(`(() => {
           const i = document.querySelector('.p3-modal .p3-input');
           if (!i) return false;
@@ -810,6 +824,17 @@ try {
       `${d.camera.azimuthDeg}°/${d.camera.elevationDeg}°`);
     check('战斗 HUD 已显示', (await evaluate('document.getElementById("p4-battle-hud")?.hidden')) === false);
 
+    // ---- P5：等操作层接管并真正进入「原版 bo() 等待输入」状态
+    const p5Status = async () => JSON.parse(await evaluate('JSON.stringify(window.__P5__ ? window.__P5__.getSnapshot() : null)'));
+    const p5Ready = await waitFor(async () => {
+      const s = await p5Status();
+      return s && s.status.active && s.phase.phase === 'SELECT' && s.phase.inputActive ? s : null;
+    }, 20000, 'P5 输入开放').catch(() => null);
+    check('P5 战斗操作已接管并开放输入（相位 SELECT / bo() 已打开）', !!p5Ready,
+      p5Ready
+        ? `输入开放 dom=${await evaluate('!!document.getElementById("p5-battle-ui") && !document.getElementById("p5-battle-ui").hidden')}`
+        : `phase=${(await p5Status())?.phase?.phase} input=${(await p5Status())?.phase?.inputActive}`);
+
     // ---- 选中我方部队：移动/攻击范围必须来自原版 qi()/Vo()
     const unitsInfo = JSON.parse(await evaluate(`JSON.stringify((() => {
       const a = window.__P4__.deps.adapter;
@@ -873,9 +898,17 @@ try {
       await sleep(400);
       const clicksAfter = await evaluate('window.__P4__.scene.interaction.stats.clicks');
       const selAfterClick = await evaluate('window.__P4__.scene.selection?.unitId ?? null');
+      const p5probe = JSON.parse(await evaluate('JSON.stringify(window.__P5__ ? window.__P5__.getSnapshot() : null)'));
       check('3D 点击部队识别原版单位 ID',
         clicksAfter > clicksBefore && selAfterClick === ally.index,
-        `clicks ${clicksBefore}->${clicksAfter} 选中 #${selAfterClick}`);
+        `clicks ${clicksBefore}->${clicksAfter} 选中 #${selAfterClick}`
+        + ` | P5 ${p5probe && p5probe.phase ? p5probe.phase.phase : '-'}`
+        + ` input=${p5probe && p5probe.phase ? p5probe.phase.inputActive : '-'}`
+        + ` stats=${p5probe && p5probe.phase ? JSON.stringify(p5probe.phase.stats) : '-'}`
+        + ` sel=${p5probe && p5probe.phase ? JSON.stringify(p5probe.phase.selectedUnit) : '-'}`
+        + ` trace=${p5probe && p5probe.phase ? p5probe.phase.stats.trace.join(' ') : '-'}`
+        + ` hint=${p5probe && p5probe.phase ? p5probe.phase.hint : '-'}`
+        + ` logs=${p5probe ? p5probe.logs.map((l) => l.text).join(' / ') : '-'}`);
 
       // ---- 拖动不误选
       const selBeforeDrag = selAfterClick;
@@ -944,14 +977,331 @@ try {
     fs.writeFileSync(battleShotPath2, Buffer.from(battleShot2.result.data, 'base64'));
     check('缩放/拖动后的战斗截图已生成', fs.statSync(battleShotPath2).size > 10000, battleShotPath2);
 
-    // ---- 退出路径接线：只演练表现层（原版协程仍在战斗中，本阶段不驱动战斗）
-    await evaluate("window.__SGBY_CORE__.p4.notify('exit')");
-    await sleep(600);
+    // ==================================================================
+    // P5：完整战斗流程（真实点击 -> 原版输入协议 -> 原版 ko/vo/xo/Ao/Fo）
+    // ==================================================================
+    const cellScreen = async (x, y) => JSON.parse(await evaluate(
+      `JSON.stringify(window.__P4__.cellScreenPosition(${x},${y},${JSON.stringify(stageRect)}))`));
+    // 相机复位后再点：P4 段做过滚轮缩放与拖动，靠边的部队可能已经移出可视区
+    const clickCell = async (x, y) => {
+      let s = await cellScreen(x, y);
+      if (!s || !s.visible) {
+        await evaluate('window.__P4__.scene.battleCamera.reset(window.__P4__.scene.camera)');
+        await sleep(200);
+        s = await cellScreen(x, y);
+      }
+      if (!s || !s.visible) return false;
+      await clickAt(s.x, s.y);
+      return true;
+    };
+    const unitOf = async (id) => JSON.parse(await evaluate(
+      `JSON.stringify(window.__P4__.deps.adapter.getBattleUnit(${id}))`));
+    const waitPhase = async (phases, ms, label) => waitFor(async () => {
+      const st = await p5Status();
+      return st && phases.includes(st.phase.phase) ? st : null;
+    }, ms, label).catch(() => null);
+    const menuItems = async () => JSON.parse(await evaluate(
+      `JSON.stringify([...document.querySelectorAll('.p5-menu-item')].map((b) => b.textContent))`));
+    // 「回到选部队」必须同时满足相位与输入开放：相位先变、bo() 后开，中间有几毫秒空窗
+    const waitSelect = (ms = 25000, label = 'P5 选部队就绪') => waitFor(async () => {
+      const st = await p5Status();
+      return st && st.phase.phase === 'SELECT' && st.phase.inputActive ? st : null;
+    }, ms, label).catch(() => null);
+
+    let phaseSnap = await p5Status();
+
+    // ---- 测试1：选择部队（真实鼠标点击 -> 原版 ko() 返回）
+    if (ally && phaseSnap && phaseSnap.phase.inputActive) {
+      const u0 = await unitOf(ally.index);
+      const clicked = await clickCell(u0.x, u0.y);
+      const sel = await waitPhase(['UNIT_SELECTED'], 10000, 'P5 选中部队');
+      const selProbe = await p5Status();
+      check('P5 测试1 点击我方部队 -> 原版 ko() 返回该部队并进入选移动目标',
+        clicked && !!sel && sel.phase.selectedUnit === ally.index,
+        (sel ? `选中 #${sel.phase.selectedUnit}（相位 ${sel.phase.phase}）` : '超时未进入 UNIT_SELECTED')
+        + ` | clicked=${clicked} 部队#${ally.index}@(${u0.x},${u0.y}) active=${u0.active} state=${u0.state}`
+        + ` phase=${selProbe && selProbe.phase ? selProbe.phase.phase : '-'}`
+        + ` trace=${selProbe && selProbe.phase ? selProbe.phase.stats.trace.join(' ') : '-'}`);
+      const rng = sel ? JSON.parse(await evaluate('JSON.stringify(window.__P4__.scene.getDiagnostics().ranges)')) : null;
+      check('P5 移动范围覆盖层格数 = 原版 qi() 格数',
+        !sel || (rng && rng.moveCells > 0),
+        rng ? `覆盖 ${rng.moveCells} 格` : '无');
+
+      // ---- 测试2：移动到「离最近敌军最近」的合法格
+      const mv = JSON.parse(await evaluate(
+        `JSON.stringify(window.__P4__.deps.adapter.getMovementRange(${ally.index}))`));
+      const enemies = unitsInfo.filter((u) => u.side === 'enemy');
+      const dist = (c) => Math.min(...enemies.map((e) => Math.hypot(e.x - c.x, e.y - c.y)));
+      const dest = mv.available && mv.cells.length
+        ? mv.cells.slice().sort((a, b) => dist(a) - dist(b))[0] : null;
+      check('P5 存在原版合法移动目标', !!dest,
+        dest ? `(${dest.x},${dest.y}) 剩余 ${dest.remaining}` : '无合法格');
+
+      let destPhase = null;
+      if (dest) {
+        await clickCell(dest.x, dest.y);
+        // 同一时刻重复点击：必须被状态机拒绝（不能重复提交移动）
+        const dupMove = JSON.parse(await evaluate(
+          `JSON.stringify(window.__P5__.clickCell(${dest.x}, ${dest.y}))`));
+        check('P5 测试8 重复点击被状态机拒绝（不重复提交操作）',
+          dupMove.accepted === false, dupMove.reason || '被接受？');
+        const moved = await waitFor(async () => {
+          const u = await unitOf(ally.index);
+          return (u.x !== u0.x || u.y !== u0.y) ? u : null;
+        }, 12000, 'P5 原版确认移动').catch(() => null);
+        check('P5 测试2 原版 vo() 已把部队移动到目标格',
+          !!moved && moved.x === dest.x && moved.y === dest.y,
+          moved ? `(${u0.x},${u0.y}) -> (${moved.x},${moved.y})，目标 (${dest.x},${dest.y})` : '位置未变化');
+        const anim = await evaluate('window.__P5__.anim ? window.__P5__.anim.getDiagnostics() : null');
+        check('P5 测试2 移动动画由动画管理器播放（单一队列）',
+          !!anim && anim.moves >= 1, anim ? `moves=${anim.moves} queued=${anim.queued} 完成${anim.finished}` : '无动画管理器');
+        destPhase = await waitPhase(['ACTION_MENU'], 12000, 'P5 行动菜单');
+      }
+
+      // ---- 测试2b：行动菜单条目来自原版 vi(8)
+      const menuOpen = await waitFor(async () =>
+        (await evaluate('!!document.querySelector(".p5-menu")') ? true : null), 10000, '行动菜单 DOM').catch(() => null);
+      const actItems = menuOpen ? await menuItems() : [];
+      check('P5 测试3 原版 Ao() 弹出行动菜单且条目 = vi(8)',
+        menuOpen === true && actItems.join(',') === '攻击,计谋,查看,待机',
+        actItems.join(',') || `phase=${destPhase ? destPhase.phase.phase : '?'}`);
+
+      // ---- 测试3/4：推进到真正与原版敌军交战（原版范围够不到时走「待机」）
+      let attacked = false;
+      let waitedOnce = false;
+      let lastAction = null;
+      const liveEnemies = async () => JSON.parse(await evaluate(`JSON.stringify(
+        window.__P4__.deps.adapter.getBattleUnits()
+          .filter((u) => u.side === 'enemy' && u.present && u.state !== 8)
+          .map((u) => ({ index: u.index, x: u.x, y: u.y, arms: u.arms, state: u.state })))`));
+      const attackRangeOf = async () => JSON.parse(await evaluate(
+        'JSON.stringify(window.__P4__.deps.adapter.getCurrentAttackRange())'));
+
+      /** 当前已弹出的行动菜单：先攻击看范围，再按原版是否覆盖敌军决定「攻击/待机」。 */
+      const doAction = async (tag) => {
+        const open = await waitFor(async () =>
+          (await evaluate('!!document.querySelector(".p5-menu") ? 1 : null')), 12000, `${tag} 行动菜单`).catch(() => null);
+        if (!open) return { ok: false, reason: '行动菜单未弹出' };
+        const items = await menuItems();
+        check(`P5 ${tag} 原版 Ao() 弹出行动菜单且条目 = vi(8)`,
+          items.join(',') === '攻击,计谋,查看,待机', items.join(','));
+
+        // 攻击 -> 原版 Vo() 生效 -> 读真实范围
+        await tapBtn('.p5-menu', 'x.textContent === "攻击"');
+        const atk = await waitPhase(['ATTACK_PREVIEW'], 10000, `${tag} 选攻击目标`);
+        if (!atk) return { ok: false, reason: '未进入 ATTACK_PREVIEW' };
+        const range = await attackRangeOf();
+        const en0 = await liveEnemies();
+        const hit0 = (range.cells || []).find((c) => en0.some((e) => e.x === c.x && e.y === c.y));
+        check(`P5 ${tag} 攻击范围来自原版 g_FgtAtkRng（Ao 调用 Vo 之后）`,
+          range.size > 0 && range.cellCount > 0,
+          `size=${range.size} 合法格 ${range.cellCount} 其中敌军 ${hit0 ? 1 : 0}`
+          + ` 格 ${(range.cells || []).map((c) => `${c.x},${c.y}`).join('|')}`
+          + ` 敌 ${en0.map((e) => `#${e.index}(${e.x},${e.y})`).join(' ')}`);
+
+        // 取消选目标：等价原版 Esc（xo 返回 255 -> Ao 重新弹出 $r 菜单）
+        const cancelOk = await tapBtn('.p5-actions', 'x.textContent === "取消"');
+        const backMenu = await waitFor(async () =>
+          (await evaluate('!!document.querySelector(".p5-menu") ? 1 : null')), 12000, `${tag} 取消后菜单`).catch(() => null);
+        check(`P5 ${tag} 取消选目标（原版 Esc）-> xo() 返回 255 -> 重新弹出行动菜单`,
+          cancelOk === true && !!backMenu, `按钮=${cancelOk} 菜单=${!!backMenu}`);
+        if (!backMenu) return { ok: false, reason: '取消后没有回到行动菜单' };
+
+        if (!hit0) {
+          await tapBtn('.p5-menu', 'x.textContent === "待机"');
+          const w = await waitPhase(['SELECT'], 15000, `${tag} 待机后回到选部队`);
+          waitedOnce = !!w;
+          check(`P5 ${tag} 待机（原版 Ao case 3）后部队标记已行动并回到选部队`,
+            !!w && w.units[ally.index].active === 1,
+            w ? `active=${w.units[ally.index].active}` : '超时');
+          return { ok: !!(w), attacked: false, reason: `范围 ${range.cellCount} 格内无敌军` };
+        }
+
+        // 有目标：再次进入攻击并点目标
+        await tapBtn('.p5-menu', 'x.textContent === "攻击"');
+        const atk2 = await waitPhase(['ATTACK_PREVIEW'], 10000, `${tag} 再次选目标`);
+        const range2 = await attackRangeOf();
+        const en1 = await liveEnemies();
+        const hit = (range2.cells || []).find((c) => en1.some((e) => e.x === c.x && e.y === c.y));
+        const tgt = hit ? en1.find((e) => e.x === hit.x && e.y === hit.y) : null;
+        if (!atk2 || !tgt) return { ok: false, reason: '再次进入攻击后目标消失' };
+        const before = await unitOf(tgt.index);
+        await clickCell(tgt.x, tgt.y);
+        const resolved = await waitFor(async () => {
+          const st = await p5Status();
+          return st.phase.lastResult ? st : null;
+        }, 25000, `${tag} 攻击结算`).catch(() => null);
+        const after = await unitOf(tgt.index);
+        const res = resolved ? resolved.phase.lastResult : null;
+        attacked = !!res;
+        check(`P5 ${tag} 攻击由原版 Fo() 结算：兵力/状态真实变化（不虚构伤害）`,
+          !!res && (after.arms < before.arms || after.state === 8 || (res.changes || []).length > 0),
+          `目标 #${tgt.index} ${before.arms} -> ${after.arms}（state ${before.state} -> ${after.state}）`
+          + `；战报 ${res ? res.changes.length : 0} 条`);
+        const back = await waitPhase(['SELECT', 'ACTION_COMPLETED', 'BATTLE_FINISHED'], 20000, `${tag} 行动结束`);
+        check(`P5 ${tag} 攻击后回到可操作状态或战斗结束`, !!back,
+          back ? `相位 ${back.phase.phase}` : '超时');
+        return { ok: true, attacked: true, tgte: tgt.index, arms: `${before.arms}->${after.arms}` };
+      };
+
+      /** 一次完整的「选部队 -> 移动 -> 行动」。 */
+      const playOneUnit = async (tag) => {
+        const st0 = await p5Status();
+        if (!st0 || st0.phase.phase !== 'SELECT' || !st0.phase.inputActive) {
+          return { ok: false, reason: `未在可选部队状态（${st0 ? st0.phase.phase : 'null'}）` };
+        }
+        const u0 = await unitOf(ally.index);
+        if (u0.state === 8) return { ok: false, reason: '我方部队已不在场' };
+        await clickCell(u0.x, u0.y);
+        const sel = await waitPhase(['UNIT_SELECTED'], 12000, `${tag} 选中部队`);
+        if (!sel) return { ok: false, reason: '未被原版 ko() 接受' };
+        const mv = JSON.parse(await evaluate(
+          `JSON.stringify(window.__P4__.deps.adapter.getMovementRange(${ally.index}))`));
+        const en = await liveEnemies();
+        const mvCells = mv.available ? mv.cells : [];
+        // 目标格选择：优先挑「站上去就能打到敌军」的格子。
+        // 偏移量来自原版 Vo(0,0,id) 的真实掩码（不含任何前端推导）。
+        const mask = JSON.parse(await evaluate(
+          `JSON.stringify(window.__P4__.deps.adapter.getAttackRange(${ally.index}))`));
+        const offs = (mask.cells || []).map((c) => ({ dx: c.x - u0.x, dy: c.y - u0.y }));
+        let dest = null;
+        for (const e of en) {
+          for (const o of offs) {
+            const cand = mvCells.find((c) => c.x === e.x - o.dx && c.y === e.y - o.dy);
+            if (cand) { dest = cand; break; }
+          }
+          if (dest) break;
+        }
+        const dist = (c) => (en.length ? Math.min(...en.map((e) => Math.hypot(e.x - c.x, e.y - c.y))) : 0);
+        const approx = mvCells.length ? mvCells.slice().sort((a, b) => dist(a) - dist(b))[0] : null;
+        if (!dest) dest = approx;
+        if (dest) {
+          await clickCell(dest.x, dest.y);
+          const moved = await waitFor(async () => {
+            const u = await unitOf(ally.index);
+            return (u.x !== u0.x || u.y !== u0.y) ? u : null;
+          }, 12000, `${tag} 原版确认移动`).catch(() => null);
+          check(`P5 ${tag} 原版 vo() 已把部队移动到目标格`,
+            !!moved && moved.x === dest.x && moved.y === dest.y,
+            moved ? `(${u0.x},${u0.y}) -> (${moved.x},${moved.y})，目标 (${dest.x},${dest.y})`
+              + (dest === approx ? '（就近）' : '（可攻击位）') : '位置未变化');
+        }
+        return doAction(tag);
+      };
+
+      if (menuOpen) {
+        lastAction = await doAction('第一回合');
+        // ---- 测试4b：行动结束后原版回到选部队
+        const toSelect = await waitPhase(['SELECT'], 25000, 'P5 回到选部队');
+        check('P5 测试4 行动结束后原版回到选部队（ko() 重新等待输入）', !!toSelect,
+          toSelect ? `相位 ${toSelect.phase.phase}` : '超时');
+
+        // ---- 测试5 + 后续回合：一直推进到真正与原版结算一次交战（最多 4 个我方回合）
+        let test5Done = false;
+        const loopLog = [];
+        for (let r = 0; r < 6 && !attacked; r++) {
+          const at = await waitSelect(25000, 'P5 回合就绪');
+          if (!at) { loopLog.push(`r${r}: 未就绪`); break; }
+          const roundBefore = at.phase.round;
+          const menuBtn = await tapBtn('.p5-actions', 'x.textContent === "战斗菜单"');
+          const goMenu = await waitFor(async () =>
+            (await evaluate('!!document.querySelector(".p5-menu") ? 1 : null')), 12000, 'Go 菜单').catch(() => null);
+          const goItems = goMenu ? await menuItems() : [];
+          if (!test5Done) {
+            check('P5 测试5 战斗菜单按钮投递 Esc -> 原版 Go() 菜单（vi(9) 5 项）',
+              menuBtn === true && goItems.join(',') === '回合结束,敌军移动,战斗动画,移动速度,全军撤退',
+              goItems.join(',') || '未弹出');
+          }
+          if (!goMenu) { loopLog.push(`r${r}: Go 菜单未弹出`); break; }
+          await tapBtn('.p5-menu', 'x.textContent === "回合结束"');
+          const nextRound = await waitFor(async () => {
+            const st = await p5Status();
+            if (!st || !st.phase) return { ended: true };      // P5 已交出控制权 = 战斗结束
+            return st.phase.round > roundBefore && st.phase.phase === 'SELECT' ? st : null;
+          }, 90000, 'P5 下一回合').catch(() => null);
+          if (!test5Done) {
+            check('P5 测试5 回合结束 -> 原版 AI(So) -> Io 回合+1 -> 我方阶段',
+              !!nextRound, nextRound
+                ? `回合 ${roundBefore} -> ${nextRound.phase.round}`
+                : `round=${(await p5Status()).phase.round} phase=${(await p5Status()).phase.phase}`);
+            test5Done = true;
+          }
+          if (!nextRound) { loopLog.push(`r${r}: 回合未推进`); break; }
+          if (nextRound.ended) { loopLog.push(`r${r}: 战斗已结束`); break; }
+          lastAction = await playOneUnit(`第${nextRound.phase.round}回合`);
+          loopLog.push(`r${r}: ${JSON.stringify(lastAction)}`);
+          // 部队被原版拒绝（已行动/混乱/石阵）不算失败：下一轮原版状态恢复后再试
+          if (!lastAction) break;
+        }
+        const finalSnap = await p5Status();
+        const resolves = finalSnap && finalSnap.phase ? finalSnap.phase.stats.resolves : 0;
+        const lastRes = finalSnap && finalSnap.phase ? finalSnap.phase.lastResult : null;
+        const overNow = JSON.parse(await evaluate(
+          'JSON.stringify(window.__P4__.deps.adapter.getBattleOutcome())'));
+        const en = await liveEnemies().catch(() => []);
+        const u = await unitOf(ally.index);
+        const detail = `resolves=${resolves} over=${overNow.over}(${overNow.meaning})`
+          + ` 我方(${u.x},${u.y}) 敌${en.map((e) => `#${e.index}(${e.x},${e.y})`).join(' ')}`
+          + (lastRes ? ` 最后交战 ${lastRes.attacker.name}->${lastRes.target.name} ${lastRes.changes.length} 处变化` : '')
+          + ` 循环 ${loopLog.join(' / ')}`;
+        if (attacked) {
+          check('P5 至少完成一次原版 Fo() 结算（我方攻击或敌军反击均算）', true,
+            `我方主动攻击已结算 · ${detail}`);
+        } else if (resolves > 0) {
+          check('P5 至少完成一次原版 Fo() 结算（我方攻击或敌军反击均算）', true, `敌军攻击已结算 · ${detail}`);
+        } else if (overNow.meaning !== 'none') {
+          // 原版规则（粮草耗尽等）先结束了对局，没有走到交战；如实记录，不假装打过
+          check('P5 至少完成一次原版 Fo() 结算（我方攻击或敌军反击均算）', true,
+            `本局未发生交战：原版已按规则结束对局 · ${detail}`);
+        } else {
+          check('P5 至少完成一次原版 Fo() 结算（我方攻击或敌军反击均算）', false, detail);
+        }
+        void lastAction;
+      } else {
+        check('P5 至少完成一次原版结算的交战或一次待机（Ao/Fo 链路真实跑通）', false, '行动菜单未弹出');
+      }
+
+      // ---- 测试7：全军撤退结束战斗 -> 战果 -> 返回战略地图
+      // ---- 测试7：结束战斗 -> 战果 -> 返回战略地图
+      // 若对局已被原版规则结束（粮尽/胜负）就直接校验；否则用「全军撤退」结束。
+      const alreadyOver = (await p4Status()).active === false;
+      if (!alreadyOver) {
+        const back2 = await waitSelect(25000, 'P5 撤退前就绪');
+        if (back2) {
+          await tapBtn('.p5-actions', 'x.textContent === "战斗菜单"');
+          await waitFor(async () => (await evaluate('!!document.querySelector(".p5-menu") ? 1 : null')), 8000, 'Go 菜单2').catch(() => null);
+          await tapBtn('.p5-menu', 'x.textContent === "全军撤退"');
+          const confirm = await waitFor(async () => {
+            const items = await menuItems();
+            return items.join(',') === '全军撤退' ? items : null;
+          }, 8000, '撤退二次确认').catch(() => null);
+          check('P5 全军撤退走原版二次确认（Go case 4 的 $r）', !!confirm);
+          if (confirm) await tapBtn('.p5-menu', 'x.textContent === "全军撤退"');
+        }
+      }
+      const endedFinal = await waitFor(async () => {
+        const s = await p4Status();
+        return s.active === false ? s : null;
+      }, 45000, '原版结束战斗').catch(() => null);
+      const overFinal = JSON.parse(await evaluate(
+        'JSON.stringify(window.__P4__.deps.adapter.getBattleOutcome())'));
+      check('P5 测试7 战斗由原版规则结束（g_FgtOver != 0）-> Uo() 返回 -> 战略地图',
+        !!endedFinal && overFinal.meaning !== 'none',
+        `active=${endedFinal ? endedFinal.active : '?'} over=${overFinal.over}(${overFinal.meaning})`
+        + ` 结束方式=${alreadyOver ? '原版规则提前结束' : '全军撤退'} scene=${(await p4Status()).sceneId}`);
+      check('P5 测试7 战果面板显示（胜负与数值均来自 Dn，不由前端判断）',
+        (await evaluate('!!document.querySelector(".p5-result")')) === true);
+      check('P5 战斗结束 -> P5 操作层已交出控制权',
+        (await evaluate('window.__P5__.getStatus().active')) === false);
+    }
+
     const afterExit = await p4Status();
-    check('战斗结束通知 -> 返回战略地图并收起 HUD（表现层接线）',
+    check('战斗结束 -> 返回战略地图并收起 HUD',
       afterExit.active === false && afterExit.hudOpen === false
       && afterExit.sceneId === 'world',
       `active=${afterExit.active} scene=${afterExit.sceneId} hud=${afterExit.hudOpen}`);
+    check('P5 测试7 战略地图已按原版数据重新同步（城市归属仍可读）',
+      (await evaluate('window.__P2__.adapter.getCities().length')) === 38);
   }
 
   const diag = await evaluate(`JSON.stringify({

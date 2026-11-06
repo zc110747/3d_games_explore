@@ -30,8 +30,10 @@ export class BattleInteraction {
     this.raycaster = new THREE.Raycaster();
     this.ndc = new THREE.Vector2();
     this.ground = null;
-    this.stats = { clicks: 0, unitClicks: 0, cellClicks: 0, misses: 0, drags: 0, wheels: 0, blockedByInactive: 0 };
+    this.stats = { clicks: 0, unitClicks: 0, cellClicks: 0, misses: 0, drags: 0, wheels: 0, blockedByInactive: 0, hovers: 0 };
     this._offs = [];
+    this._lastHover = null;
+    this._hoverRaf = 0;
   }
 
   /** 地面拾取面：不可见但可被射线命中（与地图同尺寸）。 */
@@ -53,6 +55,22 @@ export class BattleInteraction {
         this.stats.misses++;
         if (this.callbacks.onMiss) this.callbacks.onMiss(hit);
       }
+    }));
+    this._offs.push(input.on('pointermove', (p) => {
+      if (!this.isActive() || !this.callbacks.onHover) return;
+      // 悬停拾取要打射线，按帧节流，避免每次 pointermove 都做一次全场景求交
+      if (this._hoverRaf) return;
+      this._hoverRaf = (typeof requestAnimationFrame === 'function')
+        ? requestAnimationFrame(() => {
+          this._hoverRaf = 0;
+          if (!this.isActive()) return;
+          const hit = this.pick(p.ndcX, p.ndcY);
+          const key = hit.unitId !== null ? `u${hit.unitId}` : hit.cell ? `c${hit.cell.x},${hit.cell.y}` : 'none';
+          this._lastHover = key;
+          this.stats.hovers++;
+          try { this.callbacks.onHover(hit); } catch (_) { /* 悬停失败不影响操作 */ }
+        })
+        : 0;
     }));
     this._offs.push(input.on('drag', ({ dx, dy }) => {
       if (!this.isActive()) return;
@@ -99,6 +117,8 @@ export class BattleInteraction {
   }
 
   unbind() {
+    if (this._hoverRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this._hoverRaf);
+    this._hoverRaf = 0;
     for (const off of this._offs.splice(0)) { try { off(); } catch (_) { /* ignore */ } }
   }
 

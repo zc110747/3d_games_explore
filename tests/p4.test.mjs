@@ -155,21 +155,25 @@ const minJs = fs.readFileSync(path.join(SITE, 'sgby.min.js'), 'utf8');
 const coreJs = fs.readFileSync(path.join(SITE, 'sgby.core.js'), 'utf8');
 const BRIDGE_MARK = '/* === SGBY-P1-CORE-BRIDGE START';
 
-test('sgby.core.js 业务代码零改写：9 处改名可逆还原后与 sgby.min.js 逐字节一致', () => {
+test('sgby.core.js 业务代码零改写：18 处改名可逆还原后与 sgby.min.js 逐字节一致', () => {
   const at = coreJs.indexOf(BRIDGE_MARK);
   assert.ok(at > 0, '缺少桥接段标记');
   let body = coreJs.slice(0, at);
-  const names = ['$r', 'Ls', 'Ms', 'vs', 'Hs', 'Gs', 'ka', 'yo', 'Uo'];
+  const names = ['$r', 'Ls', 'Ms', 'vs', 'Hs', 'Gs', 'ka', 'yo', 'Uo',
+    'bo', 'ko', 'vo', 'xo', 'Ao', 'Fo', 'Io', 'Eo', 'So'];   // 后 9 个为 P5 追加
   for (const n of names) body = body.split(`${n}Orig(`).join(`${n}(`);
   assert.equal(body.trimEnd(), minJs.trimEnd(), '还原后应与原文完全一致');
 });
 
-test('桥接段声明 9 个同名 shim（含 P4 的 yo/Uo）', () => {
+test('桥接段声明 18 个同名 shim（含 P4 的 yo/Uo 与 P5 的 9 个操作协程）', () => {
   const bridge = coreJs.slice(coreJs.indexOf(BRIDGE_MARK));
   for (const sig of [
     'async function $r(', 'async function Ls(', 'async function Ms(', 'async function vs(',
     'async function Hs(', 'async function Gs(', 'async function ka(',
     'async function yo()', 'async function Uo()',
+    'async function bo(', 'async function ko()', 'async function vo(', 'async function xo(',
+    'async function Ao(', 'async function Fo(', 'async function Io()', 'async function Eo()',
+    'async function So()',
   ]) {
     assert.ok(bridge.includes(sig), `桥接段缺少 ${sig}`);
   }
@@ -197,8 +201,9 @@ test('Uo shim 用 finally 保证战斗异常也会通知 exit', () => {
   assert.ok(body.includes('UoOrig()'), 'Uo shim 必须调用原实现');
 });
 
-test('内核版本与导出点数量（9 处改名）标注一致', () => {
-  assert.ok(coreJs.includes("version: '4.0.0-p4'"), '版本未升级到 4.0.0-p4');
+test('内核版本与导出点数量（18 处改名：P3 7 + P4 2 + P5 9）标注一致', () => {
+  assert.ok(coreJs.includes("version: '5.0.0-p5'"), '版本未升级到 5.0.0-p5');
   assert.ok(coreJs.includes("widgetNames: Object.freeze(['$r', 'Ls', 'Ms', 'vs', 'Hs', 'Gs', 'ka'])"));
   assert.ok(coreJs.includes("widgetNames: Object.freeze(['yo', 'Uo'])"));
+  assert.ok(coreJs.includes("widgetNames: Object.freeze([\n        'bo', 'ko', 'vo', 'xo', 'Ao', 'Fo', 'Io', 'Eo', 'So',\n      ])"));
 });

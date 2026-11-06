@@ -1,0 +1,283 @@
+/* P5 战斗操作层 —— 与 P2/P3/P4 同一套暗色木质 + 金色描边 */
+
+.p5-ui {
+  position: absolute;
+  inset: 0;
+  z-index: 14;
+  pointer-events: none;
+  font-size: 12.5px;
+  color: #eadcc0;
+}
+
+.p5-ui[hidden] { display: none; }
+
+/* ------------------------------------------------------------- 阶段 / 提示 */
+.p5-top {
+  position: absolute;
+  left: 50%;
+  top: 62px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(760px, calc(100vw - 720px));
+  padding: 5px 14px;
+  border-radius: 999px;
+  background: rgba(14, 12, 9, .78);
+  border: 1px solid rgba(200, 160, 90, .38);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+  backdrop-filter: blur(2px);
+  white-space: nowrap;
+}
+
+.p5-phase {
+  font-weight: 700;
+  letter-spacing: .08em;
+  color: #f0d79a;
+  padding: 1px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(224, 176, 74, .55);
+  background: rgba(90, 68, 36, .55);
+  font-size: 11.5px;
+}
+
+.p5-phase[data-phase="SELECT"] { color: #a9e0b0; border-color: rgba(120, 200, 140, .6); }
+.p5-phase[data-phase="UNIT_SELECTED"] { color: #9ad0ff; border-color: rgba(110, 170, 240, .6); }
+.p5-phase[data-phase="ATTACK_PREVIEW"] { color: #ff9d84; border-color: rgba(230, 110, 80, .6); }
+.p5-phase[data-phase="ATTACK_ANIMATING"],
+.p5-phase[data-phase="MOVEMENT_ANIMATING"] { color: #ffd166; border-color: rgba(230, 190, 90, .7); }
+.p5-phase[data-phase="ENEMY_PHASE"] { color: #e2a0a0; border-color: rgba(200, 100, 100, .6); }
+.p5-phase[data-phase="BATTLE_FINISHED"] { color: #fff3d6; border-color: #e0b04a; }
+
+.p5-hint {
+  font-size: 11.5px;
+  color: #c9b891;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ------------------------------------------------------------- 横幅 */
+.p5-banner {
+  position: absolute;
+  left: 50%;
+  top: 26%;
+  transform: translate(-50%, 8px);
+  opacity: 0;
+  transition: opacity .22s ease, transform .22s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 34px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(40, 30, 16, .92), rgba(14, 11, 7, .94));
+  border: 1px solid rgba(224, 176, 74, .6);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .6), inset 0 1px 0 rgba(255, 226, 168, .18);
+  text-align: center;
+  pointer-events: none;
+}
+
+.p5-banner[hidden] { display: none; }
+.p5-banner.is-in { opacity: 1; transform: translate(-50%, 0); }
+.p5-banner strong { font-size: 20px; letter-spacing: .12em; color: #f6dfa8; }
+.p5-banner span { font-size: 11.5px; color: #c9b891; }
+.p5-banner.tone-round strong { font-size: 24px; }
+.p5-banner.tone-enemy strong { color: #f0b0a0; }
+.p5-banner.tone-win strong { color: #a8e6a0; }
+.p5-banner.tone-lose strong { color: #f0a090; }
+
+/* ------------------------------------------------------------- 战报 */
+.p5-log {
+  position: absolute;
+  right: 16px;
+  top: 62px;
+  width: 300px;
+  max-height: 38vh;
+  overflow: hidden;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(12, 10, 7, .72);
+  border: 1px solid rgba(200, 160, 90, .28);
+  font-size: 11.5px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+.p5-log[hidden] { display: none; }
+.p5-log-line { color: #c9b891; }
+.p5-log-line.tone-move { color: #9ad0ff; }
+.p5-log-line.tone-battle { color: #ffd9a8; }
+.p5-log-line.tone-menu { color: #d9b96a; }
+.p5-log-line.tone-warn { color: #ffb08a; }
+.p5-log-line.tone-info { color: #a9b8c8; }
+
+/* ------------------------------------------------------------- 操作条 */
+.p5-actions {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(14, 12, 9, .82);
+  border: 1px solid rgba(200, 160, 90, .38);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .5);
+  pointer-events: auto;
+}
+
+.p5-actions[hidden] { display: none; }
+
+.p5-btn {
+  padding: 6px 16px;
+  background: linear-gradient(180deg, #5b452c, #38291a);
+  border: 1px solid rgba(200, 160, 90, .55);
+  border-radius: 5px;
+  color: #f0e2c4;
+  font: inherit;
+  font-size: 12.5px;
+  letter-spacing: .05em;
+  cursor: pointer;
+}
+
+.p5-btn:hover:not(:disabled) { border-color: #e0b04a; color: #fff3d6; }
+.p5-btn:disabled { opacity: .5; cursor: default; }
+
+/* ------------------------------------------------------------- 菜单 */
+.p5-menu-wrap,
+.p5-result-wrap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 5, 3, .38);
+  pointer-events: auto;
+}
+
+.p5-menu {
+  min-width: 240px;
+  padding: 14px 16px 12px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(44, 34, 20, .97), rgba(16, 13, 9, .98));
+  border: 1px solid rgba(224, 176, 74, .65);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, .65), inset 0 1px 0 rgba(255, 226, 168, .16);
+}
+
+.p5-menu-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  letter-spacing: .12em;
+  color: #f0d79a;
+}
+
+.p5-menu-note {
+  margin: 0 0 8px;
+  font-size: 11px;
+  color: #9c8f74;
+  line-height: 1.45;
+}
+
+.p5-menu-list { display: flex; flex-direction: column; gap: 6px; }
+
+.p5-menu-item {
+  padding: 8px 14px;
+  text-align: left;
+  background: linear-gradient(180deg, #45341f, #2a1f13);
+  border: 1px solid rgba(200, 160, 90, .45);
+  border-radius: 5px;
+  color: #eadcc0;
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: .08em;
+  cursor: pointer;
+}
+
+.p5-menu-item:hover,
+.p5-menu-item:focus { border-color: #e0b04a; color: #fff3d6; outline: none; }
+.p5-menu-item.is-current { border-color: rgba(224, 176, 74, .85); box-shadow: 0 0 0 1px rgba(224, 176, 74, .35) inset; }
+
+.p5-menu-cancel {
+  margin-top: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  background: transparent;
+  border: 1px dashed rgba(200, 160, 90, .38);
+  border-radius: 5px;
+  color: #b7a888;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.p5-menu-cancel:hover { color: #f0d79a; border-color: rgba(224, 176, 74, .7); }
+
+/* ------------------------------------------------------------- 飘字 */
+.p5-floats { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+
+.p5-float {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, .9), 0 0 10px rgba(0, 0, 0, .7);
+  animation: p5-float-up 1.5s ease-out forwards;
+  white-space: nowrap;
+}
+
+.p5-float.tone-damage { color: #ff8a6a; }
+.p5-float.tone-provender { color: #ffd166; font-size: 15px; }
+.p5-float.tone-exp { color: #9ad0ff; font-size: 15px; }
+.p5-float.tone-heal { color: #62d08a; }
+
+@keyframes p5-float-up {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(.8); }
+  18% { opacity: 1; transform: translate(-50%, -70%) scale(1.06); }
+  100% { opacity: 0; transform: translate(-50%, -170%) scale(1); }
+}
+
+/* ------------------------------------------------------------- 战果 */
+.p5-result {
+  min-width: 380px;
+  max-width: 520px;
+  padding: 20px 26px 18px;
+  border-radius: 12px;
+  text-align: center;
+  background: linear-gradient(180deg, rgba(46, 35, 20, .98), rgba(14, 11, 7, .99));
+  border: 2px solid rgba(224, 176, 74, .75);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, .7), inset 0 1px 0 rgba(255, 226, 168, .2);
+}
+
+.p5-result h2 {
+  margin: 0 0 6px;
+  font-size: 26px;
+  letter-spacing: .22em;
+  color: #f6dfa8;
+}
+
+.p5-result.tone-win h2 { color: #a8e6a0; }
+.p5-result.tone-lose h2 { color: #f0a090; }
+
+.p5-result-note { margin: 0 0 12px; font-size: 11px; color: #9c8f74; line-height: 1.5; }
+
+.p5-result-lines {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, .3);
+  border: 1px solid rgba(200, 160, 90, .2);
+}
+
+.p5-result-line {
+  font-size: 12px;
+  color: #d8c9a8;
+  font-variant-numeric: tabular-nums;
+}
+
+.p5-result .p5-btn { min-width: 96px; }

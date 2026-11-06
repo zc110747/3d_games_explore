@@ -24,7 +24,7 @@ export class BattleRangeRenderer {
     this._q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0));
     this._p = new THREE.Vector3();
     this._s = new THREE.Vector3(1, 1, 1);
-    this.stats = { moveCells: 0, attackCells: 0, updates: 0 };
+    this.stats = { moveCells: 0, attackCells: 0, updates: 0, pathPoints: 0 };
   }
 
   build() {
@@ -60,8 +60,70 @@ export class BattleRangeRenderer {
     this._cursor.visible = false;
     this._cursor.renderOrder = 4;
 
-    group.add(this._move, this._attack, this._cursor);
+    // P5：移动路径折线（数据来自原版 qi() 距离场下降，见 p5/VisualPath.mjs）
+    const pathGeo = new THREE.BufferGeometry();
+    pathGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(RANGE_STYLE.maxPathPoints * 3), 3));
+    pathGeo.setDrawRange(0, 0);
+    const pathMat = new THREE.LineBasicMaterial({
+      color: 0xffd76a, transparent: true, opacity: 0.85, depthTest: false,
+    });
+    this._path = new THREE.Line(pathGeo, pathMat);
+    this._path.name = 'p5-battle-path';
+    this._path.visible = false;
+    this._path.renderOrder = 6;
+    this._path.frustumCulled = false;
+
+    // P5：目标锁定环（攻击/计谋目标）
+    const targetGeo = this.assets.geometry('p5:target-ring', (T) => new T.RingGeometry(0.5, 0.63, 28));
+    const targetMat = this.assets.material('p5:target-ring-mat', (T) => new T.MeshBasicMaterial({
+      color: 0xff4b3a, transparent: true, opacity: 0.92, depthWrite: false, side: T.DoubleSide,
+    }));
+    this._target = new THREE.Mesh(targetGeo, targetMat);
+    this._target.rotation.x = -Math.PI / 2;
+    this._target.name = 'p5-battle-target';
+    this._target.visible = false;
+    this._target.renderOrder = 5;
+
+    group.add(this._move, this._attack, this._cursor, this._path, this._target);
     return group;
+  }
+
+  /** P5：显示「从当前格到目标格」的视觉路径（只画，不判断合法性）。 */
+  showPath(cells) {
+    if (!this._path) return 0;
+    const pts = Array.isArray(cells) ? cells : [];
+    if (pts.length < 2) { this.clearPath(); return 0; }
+    const attr = this._path.geometry.getAttribute('position');
+    const n = Math.min(pts.length, RANGE_STYLE.maxPathPoints);
+    for (let i = 0; i < n; i++) {
+      const w = this.coordinate.gridToWorld(pts[i].x, pts[i].y);
+      attr.setXYZ(i, w.x, RANGE_STYLE.pathY, w.z);
+    }
+    attr.needsUpdate = true;
+    this._path.geometry.setDrawRange(0, n);
+    this._path.visible = true;
+    this.stats.pathPoints = n;
+    return n;
+  }
+
+  clearPath() {
+    if (!this._path) return;
+    this._path.visible = false;
+    this._path.geometry.setDrawRange(0, 0);
+    this.stats.pathPoints = 0;
+  }
+
+  /** P5：目标锁定环（传 null 隐藏）。 */
+  setTarget(cell) {
+    if (!this._target) return false;
+    if (!cell || !Number.isInteger(cell.x) || !Number.isInteger(cell.y)) {
+      this._target.visible = false;
+      return false;
+    }
+    const w = this.coordinate.gridToWorld(cell.x, cell.y);
+    this._target.position.set(w.x, RANGE_STYLE.pathY + 0.01, w.z);
+    this._target.visible = true;
+    return true;
   }
 
   _fill(inst, cells, y) {
@@ -108,6 +170,8 @@ export class BattleRangeRenderer {
     this._move.visible = false;
     this._attack.visible = false;
     this._cursor.visible = false;
+    this.clearPath();
+    this.setTarget(null);
     this.stats.moveCells = 0;
     this.stats.attackCells = 0;
   }
@@ -118,5 +182,7 @@ export class BattleRangeRenderer {
     this._move = null;
     this._attack = null;
     this._cursor = null;
+    this._path = null;
+    this._target = null;
   }
 }

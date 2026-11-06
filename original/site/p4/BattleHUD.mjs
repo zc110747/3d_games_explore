@@ -42,7 +42,7 @@ export class BattleHUD {
     body.append(secBattle, secUnit, secCell, secLegend);
 
     const foot = el('footer', 'p4-hud-foot');
-    foot.textContent = 'P4 只读表现层：移动/攻击仍由原版协程执行（可用「原版画面」操作）';
+    foot.textContent = '操作：P5 战棋层（点击 = 原版输入协议）；判定一律由原版 qi/vo/xo/Ao/Fo 完成';
 
     root.append(head, body, foot);
     this.host.append(root);

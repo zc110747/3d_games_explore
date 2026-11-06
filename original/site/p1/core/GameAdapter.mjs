@@ -70,7 +70,7 @@ export class GameAdapter {
     this._waiterKind = 'unknown';   // P2：最近一次 waitMsg 的调用协程（只读诊断）
     this._mapCache = { key: null, value: null };   // P4：战斗地图投影缓存（一场战斗内不变）
     this.stats = { syncCount: 0, inputHooks: 0, contextHooks: 0, lastSource: null,
-      selectionRequests: 0, injectedMessages: 0 };
+      selectionRequests: 0, injectedMessages: 0, battleClicks: 0 };
     this.capabilities = this._buildCapabilities();
   }
 
@@ -607,7 +607,10 @@ export class GameAdapter {
     };
     try {
       b.qi(unitId);
-      const origin = { x: (Dn.g_PathSX - Dn.g_PUseSX) & 0xff, y: (Dn.g_PathSY - Dn.g_PUseSY) & 0xff };
+      // 注意：这里**不能** & 0xff。原版 ea() 用掩码是因为它算的是 2D 屏幕偏移；
+      // 还原「窗口左上角在地图上的坐标」时，靠近地图上/左边缘会出现负值（例如 -1），
+      // 掩码会把它变成 255，导致格坐标整体错位到地图之外。
+      const origin = { x: Dn.g_PathSX - Dn.g_PUseSX, y: Dn.g_PathSY - Dn.g_PUseSY };
       const width = b.grid.pathWidth;      // 15
       const limit = b.grid.blockCost;      // 128
       const cells = [];
@@ -690,6 +693,232 @@ export class GameAdapter {
     if (!msg || typeof msg.type !== 'number') throw new TypeError('输入消息需要数值 type');
     input.pushMsg(msg);
     return true;
+  }
+
+  // ======================================================== P5 战斗操作通道
+  /**
+   * P5：战斗层可用的原版函数表（只读引用，绝不复制规则）。
+   * sgby.core.js 未导出 p5 时抛 UnsupportedError，让上层如实降级而不是假装可用。
+   */
+  _battleOpFns() {
+    const p5 = this.core.p5;
+    return p5 && p5.battle ? p5.battle : null;
+  }
+
+  /**
+   * P5：逻辑格 -> 原版 240x320 虚拟屏像素。
+   *
+   * 公式与源码同源（Ji()/Vi()，L5618-5623）：`(cell - 视口原点) << 4`；
+   * 再加半个图块得到该格的「点击中心」（bo() L5876 用 floor(x/Pe) 反查，
+   * 中心点必然落在本格）。本函数只做这一件事，不判断格子是否可走。
+   */
+  battleCellToScreen(x, y) {
+    const Dn = this.core.Dn, b = this._battleOpFns();
+    if (!b) throw new UnsupportedError('battleCellToScreen', '内核未导出 p5.battle', 'Ji()/Vi() L5618');
+    if (!Number.isInteger(x) || !Number.isInteger(y)) throw new TypeError('格子坐标必须是整数');
+    if (!(x >= 0 && x < Dn.g_MapWid && y >= 0 && y < Dn.g_MapHgt)) {
+      throw new RangeError(`格子越界: (${x},${y})，地图 ${Dn.g_MapWid}x${Dn.g_MapHgt}`);
+    }
+    const { tilePx, tilePy, viewCols, viewRows } = b.pixels;
+    const dx = x - Dn.g_MapSX, dy = y - Dn.g_MapSY;
+    return freeze({
+      x: (dx << 4) + (tilePx >> 1),
+      y: (dy << 4) + (tilePy >> 1),
+      inWindow: dx >= 0 && dx < viewCols && dy >= 0 && dy < viewRows,
+      window: freeze({ sx: Dn.g_MapSX, sy: Dn.g_MapSY, cols: viewCols, rows: viewRows }),
+      source: 'Ji()/Vi() L5618-5623：像素 = (格 - 视口原点) << 4',
+    });
+  }
+
+  /**
+   * P5：把原版 2D 视口滚到包含该格。
+   *
+   * 只在格子超出 15x17 视口时才调用原版 eo()（L5632，唯一负责
+   * 「钳位 + 刷新 g_FightMap + 重绘」的函数），因此钳位规则完全由原版决定。
+   * g_MapSX/SY 是纯显示量（只被 Ji/Vi/mo/wo/bo 的坐标换算使用），
+   * 与移动/攻击判定无关；这里不做任何逻辑写入。
+   */
+  ensureBattleView(x, y) {
+    const Dn = this.core.Dn, b = this._battleOpFns();
+    if (!b) throw new UnsupportedError('ensureBattleView', '内核未导出 p5.battle', 'eo() L5632');
+    const { viewCols, viewRows } = b.pixels;
+    const before = { sx: Dn.g_MapSX, sy: Dn.g_MapSY };
+    const inWindow = x >= Dn.g_MapSX && x < Dn.g_MapSX + viewCols
+      && y >= Dn.g_MapSY && y < Dn.g_MapSY + viewRows;
+    if (inWindow) return freeze({ moved: false, before, after: before, source: 'eo() L5632' });
+    const sx = Math.max(0, x - (viewCols >> 1));
+    const sy = Math.max(0, y - (viewRows >> 1));
+    b.eo(sx, sy);                       // 原版自己钳上界并重绘
+    return freeze({
+      moved: true,
+      before,
+      after: freeze({ sx: Dn.g_MapSX, sy: Dn.g_MapSY }),
+      source: 'eo() L5632（钳位/重绘均由原版完成）',
+    });
+  }
+
+  /**
+   * P5：把「点击某格」翻译成原版指针消息（type:16, param 1 按下 + 2 抬起）。
+   *
+   * 这条消息由原版 bo()（L5834）自己解释：它会把屏幕像素换算回格子、
+   * 更新 g_FoucsX/Y、再调用由 ko()/vo()/xo() 传入的判定回调。
+   * 因此本函数**不判断合法性**，返回体也不宣称「操作成功」。
+   */
+  clickBattleCell(x, y, { scroll = true } = {}) {
+    const b = this._battleOpFns();
+    if (!b) throw new UnsupportedError('clickBattleCell', '内核未导出 p5.battle', 'bo() L5834');
+    const Dn = this.core.Dn;
+    const view = scroll ? this.ensureBattleView(x, y) : null;
+    const screen = this.battleCellToScreen(x, y);
+    if (screen.y >= b.pixels.mapAreaBottom) {
+      // 原版把 y>=272 视为「下方指令条」，点击会被 js() 吃掉 —— 绝不能投递
+      return freeze({ injected: false, cell: freeze({ x, y }), screen,
+        reason: `目标像素 y=${screen.y} 落在原版下方指令条区域`, source: 'bo() L5876' });
+    }
+    const msgs = [
+      { type: b.pointer.type, param: b.pointer.down, x: screen.x, y: screen.y },
+      { type: b.pointer.type, param: b.pointer.up, x: screen.x, y: screen.y },
+    ];
+    for (const m of msgs) this.sendInput(m);
+    this.stats.injectedMessages += msgs.length;
+    this.stats.battleClicks = (this.stats.battleClicks || 0) + 1;
+    return freeze({
+      injected: true,
+      cell: freeze({ x, y }),
+      screen,
+      messages: freeze(msgs.map((m) => freeze(m))),
+      view,
+      note: '消息已投递；是否被原版接受由 bo()/Mo()/Xo() 判定，本返回值不代表移动或攻击成立',
+      source: 'class A.pushMsg (L467) + bo() L5834',
+    });
+  }
+
+  /** P5：投递一次原版按键（默认 40=取消/返回，战斗中等价于 Esc）。 */
+  pressBattleKey(param) {
+    const b = this._battleOpFns();
+    if (!b) throw new UnsupportedError('pressBattleKey', '内核未导出 p5.battle', 'class A.pushKey L461');
+    if (!Number.isInteger(param)) throw new TypeError('键码必须是整数');
+    this.sendInput({ type: ORIGINAL_INPUT.keyType, param });
+    this.stats.injectedMessages++;
+    return freeze({ injected: true, param, source: 'class A.pushKey (L461) + M 映射表 L332' });
+  }
+
+  /** P5：原版行动菜单条目（vi(8)）与战斗菜单条目（vi(9)），按定宽切成数组。 */
+  getBattleMenus() {
+    const b = this._battleOpFns();
+    if (!b) throw new UnsupportedError('getBattleMenus', '内核未导出 p5.battle', 'vi() L5387');
+    const lib = this.core.lib;
+    const action = String(lib.getStr(1, b.strIdx.actionMenu) || '');
+    const battle = String(lib.getStr(1, b.strIdx.battleMenu) || '');
+    const cut = (s, n) => {
+      const out = [];
+      for (let i = 0; i + n <= s.length; i += n) out.push(s.slice(i, i + n));
+      return out;
+    };
+    return freeze({
+      action: freeze(cut(action, 2)),          // 攻击/计谋/查看/待机
+      battle: freeze(cut(battle, 4)),          // 回合结束/敌军移动/战斗动画/移动速度/全军撤退
+      raw: freeze({ action, battle }),
+      source: 'vi(8)/vi(9) = lib.getStr(1,8/9)',
+    });
+  }
+
+  /**
+   * P5：战斗单位的紧凑快照（表现层做「操作前后差异」用）。
+   *
+   * 只读，且刻意不做投影对象（20 条/帧的开销要低）。
+   * hp/arms/state/active 在 Fo() 前后各取一次即可得到原版真实战果，
+   * 表现层据此播放受击/死亡，而不是自己推算伤害。
+   */
+  getBattleUnitStates() {
+    const Dn = this.core.Dn;
+    const gen = (Dn.g_FgtParam && Dn.g_FgtParam.GenArray) || [];
+    const out = {};
+    const pos = Dn.g_GenPos || [];
+    for (let i = 0; i < pos.length; i++) {
+      const u = pos[i];
+      const g = gen[i] || 0;
+      const pid = g ? g - 1 : -1;
+      const person = pid >= 0 && Dn.g_Persons ? Dn.g_Persons[pid] : null;
+      out[i] = {
+        x: u.x, y: u.y, hp: u.hp, mp: u.mp, move: u.move,
+        active: u.active, state: u.state,
+        officerId: pid, arms: person ? person.Arms : 0,
+      };
+    }
+    return freeze(out);
+  }
+
+  /** P5：原版战斗结束标志的真实语义（1=我军胜、2=我军败、0=进行中）。 */
+  getBattleOutcome() {
+    const b = this._battleOpFns();
+    const over = this.core.Dn.g_FgtOver;
+    const map = b ? b.battleOver : { none: 0, win: 1, lose: 2 };
+    return freeze({
+      over,
+      meaning: over === map.win ? 'win' : over === map.lose ? 'lose' : 'none',
+      source: 'yo() L5750 / Io() L6192 / Go() L6423 / Eo() L6237 / So() L6250',
+    });
+  }
+
+  /**
+   * P5：原版 g_FightPath 的**当前**内容（不重算）。
+   *
+   * 与 getMovementRange() 的区别：那个会调用 qi() 再还原；这个纯粹读取
+   * vo()/Qo() 刚刚算出来的距离场，用于把「已经发生的移动」还原成视觉折线。
+   * g_PathSX - g_PUseSX 就是 15x15 窗口左上角在地图上的坐标（与原版 ea() 同源）。
+   */
+  getBattlePathField() {
+    const Dn = this.core.Dn;
+    const p4 = this._battleFns();
+    const p5 = this._battleOpFns();
+    const width = p4 ? p4.grid.pathWidth : (p5 ? p5.pixels.viewCols : 15);
+    const blockCost = p4 ? p4.grid.blockCost : 128;
+    return freeze({
+      raw: Uint8Array.from(Dn.g_FightPath.subarray(0, width * width)),
+      // 不能用 & 0xff：负的窗口原点代表「窗口左上角在地图外」，掩码会变成 255 而错位
+      origin: { x: Dn.g_PathSX - Dn.g_PUseSX, y: Dn.g_PathSY - Dn.g_PUseSY },
+      width,
+      blockCost,
+      source: 'g_FightPath + g_PathSX/g_PUseSX（原版 vo()/Qo() 刚算出的距离场）',
+    });
+  }
+
+  /**
+   * P5：原版**当前生效**的攻击/计谋范围（直接读 g_FgtAtkRng，不重算）。
+   *
+   * Ao() 在 xo() 之前调用 Vo(type,skill,unitId)，所以「菜单选完 → 选目标」
+   * 这段时间里 g_FgtAtkRng 就是本次行动的真实合法范围（普通攻击 5x5、计谋 9x9）。
+   * 与 P4 的 getAttackRange() 不同，这里不调用 Vo()，因此不会覆盖原版状态。
+   */
+  getCurrentAttackRange() {
+    const Dn = this.core.Dn;
+    const rng = Dn.g_FgtAtkRng;
+    const size = rng[0];
+    const origin = { x: rng[1], y: rng[2] };
+    const cells = [];
+    if (size > 0) {
+      for (let i = 0; i < size * size; i++) {
+        if (rng[3 + i] !== 1) continue;            // 与原版 Ho()/ _o() 同一判定
+        cells.push(freeze({ x: origin.x + (i % size), y: origin.y + Math.floor(i / size) }));
+      }
+    }
+    return freeze({
+      available: size > 0,
+      size, origin: freeze(origin),
+      cells: freeze(cells), cellCount: cells.length,
+      source: '直接读取 g_FgtAtkRng（Ao() 调用 Vo() 之后的有效范围）',
+    });
+  }
+
+  /** P5：最近一次被原版 vo() 确认的移动（from = g_BakUpX/Y，to = g_GenPos）。 */
+  getLastBattleMove() {
+    const Dn = this.core.Dn;
+    return freeze({
+      from: freeze({ x: Dn.g_BakUpX, y: Dn.g_BakUpY }),
+      to: freeze({ x: Dn.g_FoucsX, y: Dn.g_FoucsY }),
+      source: 'vo() L5975：g_BakUpX/Y = 移动前位置，g_GenPos = 移动后位置',
+    });
   }
 
   /**
@@ -838,14 +1067,21 @@ export class GameAdapter {
       canSelectUnit: read('原版 Xo()，临时借用 g_FoucsX/Y 后立刻还原（P4）'),
       getMovementRange: read('调用原版 qi()，快照/还原 g_FightPath 后还原格坐标（P4）'),
       getAttackRange: read('调用原版 Vo(0,0,id)，快照/还原 g_FgtAtkRng（P4）'),
+      getBattleMenus: read('vi(8)/vi(9) = lib.getStr(1,8/9)（P5）'),
+      getBattleUnitStates: read('Dn.g_GenPos + g_Persons[].Arms 紧凑快照（P5）'),
+      getBattleOutcome: read('Dn.g_FgtOver 的真实语义（P5）'),
+      battleCellToScreen: read('Ji()/Vi() 像素公式，不判断合法性（P5）'),
       sendInput: freeze({ status: 'write', source: 'class A.pushMsg（原版规定入口）' }),
       requestCitySelection: freeze({ status: 'write', source: 'P2：方向键/确认键经 pushMsg 驱动 zs()，需 getInputPhase().canSelectCity' }),
+      clickBattleCell: freeze({ status: 'write', source: 'P5：type:16 指针消息经 pushMsg 投递，由原版 bo() 解释；不判断合法性' }),
+      pressBattleKey: freeze({ status: 'write', source: 'P5：键码经 pushMsg 投递，由原版输入循环解释' }),
+      ensureBattleView: freeze({ status: 'write', source: 'P5：调用原版 eo() 滚动 2D 视口（g_MapSX/SY 为纯显示量）' }),
       selectCity: un('原版是输入循环，方向相反', 'zs() L4247'),
       executeCityAction: un('原版是协程 UI，无参数化入口', 'mi() L4609'),
       selectOfficer: un('原版是异步选择窗口', 'Ls() L3686'),
-      moveUnit: un('原版由协程驱动，含动画与回合状态', 'Ao()/Fo()'),
-      attackUnit: un('原版由协程结算', 'Fo()/Bo()'),
-      endTurn: un('原版是菜单项 + 结算协程', 'Ma()/wa()/ma()'),
+      moveUnit: un('原版移动由 vo() 协程驱动（范围/路径/消耗全在原版内），无参数化入口', 'vo() L5962 / qi() L5524'),
+      attackUnit: un('原版攻击由 Ao()/Fo()/Bo() 协程结算，无参数化入口', 'Ao() L6000 / Fo() L6024'),
+      endTurn: un('战斗回合结束是 Go() 菜单项「回合结束」+ AI 阶段', 'Go() L6394 / Eo() L6218'),
     });
   }
 

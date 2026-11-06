@@ -168,7 +168,7 @@ test('真实城市数据仍是 38 城 / 200 将（P0 基线）', () => {
 });
 
 // ---------------------------------------------------------------- B. 生成物事实
-test('sgby.core.js = min.js + 9 处改名 + 桥接；9 个 shim 与 9 个 *Orig 都在', () => {
+test('sgby.core.js = min.js + 18 处改名 + 桥接；18 个 shim 与 18 个 *Orig 都在', () => {
   const min = fs.readFileSync(MIN_JS, 'utf8');
   const out = fs.readFileSync(CORE_JS, 'utf8');
   const at = out.indexOf('/* === SGBY-P1-CORE-BRIDGE START');
@@ -185,6 +185,16 @@ test('sgby.core.js = min.js + 9 处改名 + 桥接；9 个 shim 与 9 个 *Orig 
     // P4 追加：战斗初始化 / 整场战斗（只通知表现层，不改返回值）
     ['async function yoOrig(){', 'async function yo(){'],
     ['async function UoOrig(){', 'async function Uo(){'],
+    // P5 追加：战斗输入循环与操作协程（只通知 + 转发输入，不改任何判定）
+    ['async function boOrig(t,e=null){', 'async function bo(t,e=null){'],
+    ['async function koOrig(){', 'async function ko(){'],
+    ['async function voOrig(t){', 'async function vo(t){'],
+    ['async function xoOrig(t,e,n){', 'async function xo(t,e,n){'],
+    ['async function AoOrig(t){', 'async function Ao(t){'],
+    ['async function FoOrig(n){', 'async function Fo(n){'],
+    ['async function IoOrig(){', 'async function Io(){'],
+    ['async function EoOrig(){', 'async function Eo(){'],
+    ['async function SoOrig(){', 'async function So(){'],
   ];
   // 前缀还原后必须与原文逐字节一致
   let restored = out.slice(0, at);

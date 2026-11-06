@@ -34,7 +34,10 @@ export class BattleUnitRenderer {
     this._labelTexture = null;
     this._elapsed = 0;
     this._badgeTextures = new Map();   // `${glyph}|${color}` -> CanvasTexture
-    this.stats = { built: 0, visible: 0, updates: 0, ownerChanges: 0, badges: 0 };
+    // P5：表现层位移/旋转/缩放覆盖量（不写回 GameAdapter，也不代表逻辑位置）
+    this._vis = new Map();             // unitId -> { dx, dy, dz, rotY, scale, badgeOpacity }
+    this._held = new Set();            // 死亡动画期间继续保持可见的部队
+    this.stats = { built: 0, visible: 0, updates: 0, ownerChanges: 0, badges: 0, flashes: 0 };
   }
 
   build() {
@@ -199,11 +202,13 @@ export class BattleUnitRenderer {
     const rec = this.units.get(unit.index);
     if (!rec) return;
     const w = this.coordinate.gridToWorld(unit.x, unit.y);
-    rec.root.position.set(w.x, 0, w.z);
+    rec.basePos = { x: w.x, y: 0, z: w.z };
     rec.rec = unit;
+    this._applyTransform(rec);
 
     const alive = unit.present && unit.state !== 8;
-    rec.root.visible = alive;
+    // P5：死亡动画期间由 holdUnit() 保持可见，动画结束后再回到原版状态
+    rec.root.visible = alive || this._held.has(unit.index);
     if (!alive) return;
 
     // 材质按 (阵营/兵种/势力) 缓存：这里只切换引用，绝不修改共享材质本身
@@ -252,6 +257,68 @@ export class BattleUnitRenderer {
     this.stats.visible = n;
   }
 
+  // ------------------------------------------------------ P5 表现层覆盖量
+  /**
+   * 给某支部队叠加**纯视觉**的位移/旋转/缩放。
+   *
+   * 关键：basePos 永远来自 GameAdapter（= 原版 g_GenPos 的格子），
+   * 这里只加偏移量，绝不改写 basePos 本身；因此「动画中的临时位置」
+   * 不会被任何代码当成逻辑位置（P5 §2.2）。
+   */
+  setVisual(unitId, patch) {
+    const rec = this.units.get(unitId);
+    if (!rec) return null;
+    const cur = this._vis.get(unitId) || { dx: 0, dy: 0, dz: 0, rotY: 0, scale: 1, badgeOpacity: 1 };
+    const next = { ...cur, ...patch };
+    this._vis.set(unitId, next);
+    this._applyTransform(rec);
+    return next;
+  }
+
+  clearVisual(unitId) {
+    const rec = this.units.get(unitId);
+    this._vis.delete(unitId);
+    if (rec) this._applyTransform(rec);
+  }
+
+  getVisual(unitId) { return this._vis.get(unitId) || null; }
+
+  _applyTransform(rec) {
+    if (!rec || !rec.basePos) return;
+    const v = this._vis.get(rec.root.userData.unitId);
+    if (!v) {
+      rec.root.position.set(rec.basePos.x, rec.basePos.y, rec.basePos.z);
+      rec.root.rotation.set(0, 0, 0);
+      rec.root.scale.set(1, 1, 1);
+      if (rec.badge) rec.badge.material.opacity = 1;
+      return;
+    }
+    rec.root.position.set(rec.basePos.x + v.dx, rec.basePos.y + v.dy, rec.basePos.z + v.dz);
+    rec.root.rotation.y = v.rotY;
+    rec.root.scale.setScalar(v.scale);
+    if (rec.badge) rec.badge.material.opacity = v.badgeOpacity;
+  }
+
+  /** 受击闪色：临时把体块换成共享的闪色材质，到期后由 _apply() 还原。 */
+  setFlash(unitId, seconds = 0.3) {
+    const rec = this.units.get(unitId);
+    if (!rec || !rec.root.visible) return false;
+    rec.body.material = this.assets.material('p5:unit-flash',
+      (T) => new T.MeshLambertMaterial({ color: 0xff6a45 }));
+    rec._flashT = seconds;
+    this.stats.flashes++;
+    return true;
+  }
+
+  /** 死亡动画期间保持可见（原版 state 已置 8，但模型还要播完下沉）。 */
+  holdUnit(unitId, on = true) {
+    if (on) this._held.add(unitId); else this._held.delete(unitId);
+    const rec = this.units.get(unitId);
+    if (rec) this._apply(rec.rec);
+  }
+
+  isHeld(unitId) { return this._held.has(unitId); }
+
   // ------------------------------------------------------------------ 选中
   setSelected(unitId) {
     this._selected = Number.isInteger(unitId) ? unitId : null;
@@ -280,17 +347,24 @@ export class BattleUnitRenderer {
   // ------------------------------------------------------------------ 帧更新
   update(dt) {
     this._elapsed += dt;
-    const rec = this._selected === null ? null : this.units.get(this._selected);
-    if (this._ring && this._ring.visible) {
+    const sel = this._selected === null ? null : this.units.get(this._selected);
+    if (this._ring && this._ring.visible && sel) {
       const pulse = 1 + Math.sin(this._elapsed * 3.4) * 0.06;
       this._ring.scale.set(pulse, pulse, 1);
+      // P5：选中环/名字牌跟随部队的**表现位置**（移动/受击动画期间也贴着模型）
+      this._ring.position.set(sel.root.position.x, 0.09, sel.root.position.z);
+      this._label.position.set(sel.root.position.x, UNIT_STYLE.labelY, sel.root.position.z);
     }
     // 旗布轻微飘动（纯视觉，用相位错开）
-    for (const { banner, root } of this.units.values()) {
+    for (const rec of this.units.values()) {
+      const { banner, root } = rec;
       if (!root.visible) continue;
       banner.rotation.y = Math.sin(this._elapsed * 1.8 + root.position.x * 0.7) * 0.16;
+      if (rec._flashT > 0) {
+        rec._flashT -= dt;
+        if (rec._flashT <= 0) { rec._flashT = 0; this._apply(rec.rec); }
+      }
     }
-    void rec;
   }
 
   // ------------------------------------------------------------------ 查询
@@ -305,6 +379,12 @@ export class BattleUnitRenderer {
     return rec ? { x: rec.root.position.x, y: rec.root.position.y, z: rec.root.position.z } : null;
   }
 
+  /** P5：部队的**逻辑**世界坐标（来自 GameAdapter 的格子），不含任何动画偏移。 */
+  getBaseWorld(unitId) {
+    const rec = this.units.get(unitId);
+    return rec && rec.basePos ? { x: rec.basePos.x, y: rec.basePos.y, z: rec.basePos.z } : null;
+  }
+
   getUnitRecord(unitId) {
     const rec = this.units.get(unitId);
     return rec ? rec.rec : null;
@@ -314,6 +394,8 @@ export class BattleUnitRenderer {
     if (this._labelTexture) { this._labelTexture.dispose(); this._labelTexture = null; }
     for (const tex of this._badgeTextures.values()) { try { tex.dispose(); } catch (_) { /* ignore */ } }
     this._badgeTextures.clear();
+    this._vis.clear();
+    this._held.clear();
     if (this.group && this.group.parent) this.group.parent.remove(this.group);
     this.units.clear();
     this.group = null;
