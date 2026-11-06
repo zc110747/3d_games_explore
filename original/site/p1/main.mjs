@@ -23,6 +23,7 @@ import { WorldCamera } from '../p2/WorldCamera.mjs';
 import { StrategicMapScene } from '../p2/StrategicMapScene.mjs';
 import { MapInteraction } from '../p2/MapInteraction.mjs';
 import { DebugPanel } from '../p2/DebugPanel.mjs';
+import { createCityManager } from '../p3/boot.mjs';
 
 const $ = (id) => document.getElementById(id);
 const logEl = $('p1-log');
@@ -74,9 +75,11 @@ async function boot() {
   const statusList = $('p1-status-list');
   const modal = $('p1-modal-overlay');
   const p2Panel = $('p2-panel');
+  const p3Chip = $('p3-chip');
   let mapScene = null;
   let interaction = null;
   let debugPanel = null;
+  let cityManager = null;
 
   const events = new EventManager();
   const coordinate = new CoordinateSystem();
@@ -151,6 +154,13 @@ async function boot() {
       ['P2 选中城市', interaction?.selectedCityId === null || !interaction
         ? '未选中' : `#${interaction.selectedCityId}`],
       ['P2 原版联动', interaction ? interaction.intent : '—'],
+      ['P3 城市会话', cityManager ? (cityManager.session.cityLoop
+        ? `原版 ka() 中 · 城 #${cityManager.session.cityId ?? '—'}` : '未进入（原版未调用 ka()）') : '—'],
+      ['P3 城市界面', cityManager && cityManager.ui.isOpen ? `已打开（城 #${cityManager.ui.cityId}）` : '关闭'],
+      ['P3 接管 列表/武将/提示', cityManager
+        ? (() => { const s = cityManager.getStatus().stats;
+          return `${s.lists} / ${s.persons} / ${s.messages}`; })()
+        : '—'],
     ];
     if (statusList) {
       statusList.replaceChildren();
@@ -163,6 +173,13 @@ async function boot() {
       }
     }
     if (phaseEl) phaseEl.textContent = coreReady ? `运行中 · ${scenes.currentId}` : '等待原版资源包';
+    if (p3Chip) {
+      const st = cityManager ? cityManager.getStatus() : null;
+      p3Chip.textContent = !st ? '城市 UI 未装配'
+        : !st.cityLoop ? '城市 UI 待命（点击己方城）'
+          : st.open ? `城市管理 · ${st.cityId}` : '原版城市阶段 · 等待选城';
+      p3Chip.style.color = st && st.cityLoop ? '#e0c07a' : '';
+    }
     if (debugPanel && mapScene && coreReady) {
       try { refreshDebug(); } catch (e) { /* 状态切换瞬间忽略 */ }
     }
@@ -456,6 +473,46 @@ async function boot() {
     });
     suites.push(p2.summary());
 
+    // ---------------------------------------------------------- P3 城市管理自检
+    const p3 = makeSuite('P3 城市管理');
+    const p3st = cityManager ? cityManager.getStatus() : null;
+    p3.check('内核 7 个 UI 控件接管点已导出', () => {
+      const names = core.p3 ? core.p3.widgetNames : null;
+      if (!names || names.length !== 7) throw new Error(`实际 ${names ? names.length : 0} 个`);
+      return names.join('/');
+    });
+    p3.check('原版菜单 4 类 / 14+5+5 项', () => {
+      const g = cityManager.cityUI.getActionGroups();
+      if (g.groups.length !== 4) throw new Error(`大类 ${g.groups.length}`);
+      const counts = g.groups.slice(0, 3).map((x) => x.items.length);
+      if (counts.join(',') !== '14,5,5') throw new Error(`条目 ${counts.join(',')}`);
+      return `${g.main.join('/')} · ${counts.join('+')} · 第 4 类=${g.groups[3].name}`;
+    });
+    p3.check('指令分支集合来自内核扫描（23/24，缺 18 反间）', () => {
+      const ids = core.p3.actionIds;
+      if (ids.length !== 23) throw new Error(`实际 ${ids.length} 个`);
+      if (ids.includes(18)) throw new Error('18 反间 不应出现在 mi() 分支中');
+      const miss = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 19, 23, 24, 25, 26, 27]
+        .filter((id) => !ids.includes(id));
+      if (miss.length) throw new Error(`缺少 ${miss.join(',')}`);
+      return `${ids.length} 个，缺 18`;
+    });
+    p3.check('原版查询函数可用（ss/Bs/Ys/Is/$n）', () => {
+      if (!cityManager.cityUI.available) throw new Error('原版函数缺失，UI 将进入降级模式');
+      return 'ss/Bs/Ys/Is/$n 全部可用';
+    });
+    p3.check('未进入城市会话时界面不显示', () => !cityManager.ui.isOpen && !p3st.cityLoop);
+    p3.check('对话框宿主初始无残留', () => cityManager.dialogHost.openCount === 0);
+    p3.check('阻断标记只挂在可见部件上（frame / 遮罩 / 弹窗）', () => {
+      const root = document.getElementById('p3-city');
+      if (!root) throw new Error('城市界面未挂载');
+      if (root.hasAttribute('data-p1-ui-block')) throw new Error('根容器不应带阻断标记（会吞掉整屏点击）');
+      const frame = root.querySelector('.p3-frame');
+      if (!frame || !frame.hasAttribute('data-p1-ui-block')) throw new Error('frame 缺少阻断标记');
+      return 'root 无标记 / frame 有标记';
+    });
+    suites.push(p3.summary());
+
     const pass = suites.reduce((n, s) => n + s.pass, 0);
     const fail = suites.reduce((n, s) => n + s.fail, 0);
     if (verbose) {
@@ -559,8 +616,16 @@ async function boot() {
     THREE, input, adapter, scene: mapScene, worldCamera,
     getCamera: () => mapScene.camera,
     isActive: () => scenes.currentId === SCENE_IDS.WORLD,
+    // P3：只读通知城市会话「用户点了哪个城」，供选目标城市等场景使用
+    onCityClick: (cityId) => { if (cityManager) cityManager.session.noteClickedCity(cityId); },
   });
   interaction.bind();
+  cityManager = createCityManager({
+    core, adapter, events, input, interaction,
+    log: (msg) => log(`[P3] ${msg}`),
+  });
+  log(`P3 城市管理已装配：接管 ${cityManager.getStatus().widgets.join(' / ')}`);
+  log('提示：点「原版画面」在主菜单开新局，进入剧本后点击己方城市即可打开城市管理');
   renderManager.resize();           // 触发 worldCamera.fit，保证整图可见
   renderStatus();
 
@@ -610,6 +675,34 @@ async function boot() {
     runSmoke,
     switchScene,
   });
+  /** P3 城市管理调试/自动化入口（只读诊断 + 明确标注的表现层开关）。 */
+  window.__P3__ = Object.freeze({
+    version: cityManager.version,
+    core, adapter, events, input,
+    session: cityManager.session,
+    ui: cityManager.ui,
+    cityUI: cityManager.cityUI,
+    dialogHost: cityManager.dialogHost,
+    officerDialog: cityManager.officerDialog,
+    getStatus: () => cityManager.getStatus(),
+    getSnapshot: () => {
+      const st = cityManager.getStatus();
+      const cityId = st.cityId;
+      return {
+        status: st,
+        phase: adapter.getInputPhase(),
+        cursor: adapter.getCityCursor(),
+        city: Number.isInteger(cityId) ? adapter.getCity(cityId) : null,
+        report: Number.isInteger(cityId) ? cityManager.cityUI.getCityReport(cityId).lines : [],
+        officers: Number.isInteger(cityId) ? cityManager.cityUI.getCityOfficers(cityId).rows.length : 0,
+        log: cityManager.ui.logs.slice(-8),
+      };
+    },
+    getActionGroups: () => cityManager.cityUI.getActionGroups(),
+    runSmoke,
+    switchScene,
+  });
+
   return window.__P1__;
 }
 

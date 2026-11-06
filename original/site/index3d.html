@@ -3,11 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>三国霸业 · 3D 重制 P2 战略地图</title>
+<title>三国霸业 · 3D 重制 P3 城市管理</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230c0e11'/%3E%3Ctext x='16' y='24' font-size='21' text-anchor='middle' fill='%23e0b04a'%3E%E9%9C%B8%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="p1/style.css">
 <link rel="stylesheet" href="p2/style.css">
+<link rel="stylesheet" href="p3/style.css">
 <script type="importmap">
 {
   "imports": {
@@ -26,15 +27,16 @@
   <!-- ===================== HTML UI 层 ===================== -->
   <div id="p1-ui" data-p1-ui>
     <div id="p1-toolbar">
-      <span class="p1-title">三国霸业 · P2 三维战略地图</span>
+      <span class="p1-title">三国霸业 · P3 城市管理</span>
       <span id="p1-phase" class="p1-chip">启动中</span>
+      <span id="p3-chip" class="p1-chip">城市 UI 待命</span>
       <button type="button" class="p1-btn" id="p2-toggle-panel">地图调试</button>
       <button type="button" class="p1-btn" id="p1-toggle-panel">P1 面板</button>
       <button type="button" class="p1-btn" id="p1-toggle-legacy">原版画面</button>
     </div>
 
     <section id="p2-panel" class="p1-card" data-p1-ui-block></section>
-    <div id="p2-hint">3D 战略地图 · 左键拖动平移 · 滚轮缩放 · 点击城市查看 / R 复位</div>
+    <div id="p2-hint">3D 战略地图 · 左键拖动 · 滚轮缩放 · 点击城市 = 原版选城（己方城进入城市管理）</div>
 
     <section id="p1-panel" class="p1-card hidden" data-p1-ui-block>
       <h2>运行状态</h2>

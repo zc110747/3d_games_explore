@@ -15,7 +15,7 @@
 import { MAP_INTERACTION_CONFIG as I } from './config.mjs';
 
 export class MapInteraction {
-  constructor({ THREE, input, adapter, scene, worldCamera, getCamera, isActive = () => true }) {
+  constructor({ THREE, input, adapter, scene, worldCamera, getCamera, isActive = () => true, onCityClick = null }) {
     if (!THREE || !input || !adapter || !scene || !worldCamera) {
       throw new TypeError('MapInteraction 依赖不完整');
     }
@@ -26,6 +26,7 @@ export class MapInteraction {
     this.worldCamera = worldCamera;
     this._getCamera = getCamera || (() => scene.camera);
     this.isActive = isActive;   // 只在战略地图场景响应，避免切到城市场景误操作
+    this.onCityClick = onCityClick;   // P3：把命中城市告知城市管理会话（只读通知）
     this._raycaster = new THREE.Raycaster();
     this._ndc = new THREE.Vector2();
     this._unbind = [];
@@ -99,6 +100,9 @@ export class MapInteraction {
       request = { injected: false, reason: `${e.name}: ${e.message}` };
     }
     this.adapter.notifyCitySelected(cityId);   // -> scene 订阅后更新高亮/道路
+    if (typeof this.onCityClick === 'function') {
+      try { this.onCityClick(cityId, request); } catch (e) { console.error('[P2] onCityClick 异常:', e); }
+    }
     this.selectedCityId = cityId;
     this.lastRequest = request;
     this.lastOriginalCursor = null;

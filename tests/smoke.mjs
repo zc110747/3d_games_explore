@@ -71,9 +71,25 @@ try {
     origHtml.includes('sgby.min.js') && !origHtml.includes('sgby.core.js'));
   const minJs = fs.readFileSync(path.join(ORIGINAL, 'site', 'sgby.min.js'));
   const coreJs = fs.readFileSync(path.join(ORIGINAL, 'site', 'sgby.core.js'));
-  check('sgby.core.js = sgby.min.js + 只读尾注（业务代码零改动）',
-    coreJs.subarray(0, minJs.length).equals(minJs) && coreJs.length - minJs.length < 2000,
-    `min=${minJs.length}B core=${coreJs.length}B delta=${coreJs.length - minJs.length}B`);
+  // 不变量：core.js 去掉桥接尾注、把 7 处控件改名反向还原后，必须与 min.js 逐字节相同。
+  // 这比「前缀相同」更强：任何额外改动都会被抓到。
+  const RENAMES = [
+    ['async function $rOrig(t,e,n){', 'async function $r(t,e,n){'],
+    ['async function LsOrig(t,e,n,r,s,i,st){', 'async function Ls(t,e,n,r,s,i,st){'],
+    ['async function MsOrig(t){', 'async function Ms(t){'],
+    ['async function vsOrig(t,e){', 'async function vs(t,e){'],
+    ['async function HsOrig(t,e,n){', 'async function Hs(t,e,n){'],
+    ['async function GsOrig(t){', 'async function Gs(t){'],
+    ['async function kaOrig(){', 'async function ka(){'],
+  ];
+  const coreText = coreJs.toString('utf8');
+  const bridgeAt = coreText.indexOf('/* === SGBY-P1-CORE-BRIDGE START');
+  let restored = bridgeAt > 0 ? coreText.slice(0, bridgeAt) : '';
+  for (const [from, to] of RENAMES) restored = restored.split(from).join(to);
+  const sameAsSource = restored.replace(/\s+$/, '') === minJs.toString('utf8').replace(/\s+$/, '');
+  check('sgby.core.js = sgby.min.js + 7 处控件改名 + 桥接尾注（业务代码零改动）',
+    sameAsSource && bridgeAt > 0,
+    `min=${minJs.length}B core=${coreJs.length}B delta=${coreJs.length - minJs.length}B 还原一致=${sameAsSource}`);
 
   edge = spawn(EDGE, [
     '--headless=new',
@@ -376,6 +392,249 @@ try {
       `目标 #${city.id}(${city.position.x},${city.position.y}) 投递 ${req.messageCount ?? 0} 键 -> 原版光标 (${after.setx},${after.sety}) 城 #${after.cityId ?? '—'}`);
   }
 
+  // ==================================================================
+  // P3 城市管理：真实点击己方城市 -> HTML 界面 -> 原版 mi() 执行 -> 数值真变
+  // ==================================================================
+  const p3Status = async () => JSON.parse(await evaluate('JSON.stringify(window.__P3__.getStatus())'));
+  const rectOf = async (sel) => JSON.parse(await evaluate(`JSON.stringify((() => {
+    const e = document.querySelector(${JSON.stringify(sel)});
+    if (!e) return null;
+    const r = e.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width, h: r.height };
+  })())`));
+  const clickEl = async (sel) => {
+    const r = await rectOf(sel);
+    if (!r || r.w < 2 || r.h < 2) return false;
+    await clickAt(r.x, r.y);
+    await sleep(140);
+    return true;
+  };
+  const tapText = async (text, scope = '.p3-modal') => evaluate(`(() => {
+    const root = document.querySelector(${JSON.stringify(scope)});
+    if (!root) return false;
+    const b = [...root.querySelectorAll('button')].find((x) => x.textContent.trim() === ${JSON.stringify(text)});
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+
+  const p3Ready = await evaluate('!!window.__P3__');
+  check('P3 调试接口就绪', p3Ready === true);
+  const p3Boot = await p3Status();
+  check('P3 接管点 7 个已导出', p3Boot.widgets.length === 7, p3Boot.widgets.join('/'));
+  check('P3 城市会话在原版 ka() 内自动开启', p3Boot.cityLoop === true,
+    `cityLoop=${p3Boot.cityLoop} cityId=${p3Boot.cityId} phase=${p3Boot.stats.sessions}`);
+
+  let cityOpened = null;
+  let ownPick = null;
+  let ownList = [];
+  if (opened && p3Boot.cityLoop) {
+    ownList = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const a = window.__P2__.adapter, vp = ${JSON.stringify(stageRect)};
+      const k = a.getGameState().playerKing + 1;
+      return a.getCities().filter((c) => c.ownerId === k).map((c) => {
+        const s = window.__P2__.cityScreenPosition(c.id, vp);
+        return { id: c.id, name: c.name, x: c.position.x, y: c.position.y,
+          screen: s && s.visible ? { x: s.x, y: s.y } : null };
+      }).filter((c) => c.screen);
+    })())`));
+    const ownClickable = ownList.filter((c) => c.screen.x > stageRect.left + 380
+      && c.screen.x < stageRect.left + stageRect.width - 120
+      && c.screen.y > stageRect.top + 100
+      && c.screen.y < stageRect.top + stageRect.height * 0.62);   // 避开底部收起条
+    ownPick = ownClickable[0] || ownList[0] || null;
+    check('找到玩家控制且可点击的城市', !!ownPick,
+      ownList.slice(0, 4).map((c) => `#${c.id} ${c.name}`).join(', ') || '无');
+
+    if (ownPick) {
+      const hitTag = await evaluate(`(() => {
+        const e = document.elementFromPoint(${ownPick.screen.x}, ${ownPick.screen.y});
+        return e ? e.tagName : null;
+      })()`);
+      check('城市屏幕位置落在 3D 画布上（未被 HTML 遮挡）', hitTag === 'CANVAS', String(hitTag));
+      await clickAt(ownPick.screen.x, ownPick.screen.y);
+      cityOpened = await waitFor(async () => {
+        const s = await p3Status();
+        return s.open && s.cityId === ownPick.id ? s : null;
+      }, 9000, 'P3 城市界面').catch(() => null);
+    }
+  }
+
+  check('3D 点击己方城市 -> 打开城市管理界面（原版 ei()）', !!cityOpened,
+    cityOpened ? `城 #${cityOpened.cityId}` : '超时未打开');
+
+  if (cityOpened) {
+    const domName = await evaluate('document.getElementById("p3-city-name")?.textContent || ""');
+    const statsCount = await evaluate('document.querySelectorAll("#p3-info-bar dt").length');
+    const railCount = await evaluate('document.querySelectorAll("#p3-rail .p3-rail-btn").length');
+    const itemCount = await evaluate('document.querySelectorAll("#p3-list button.p3-item").length');
+    check('城市信息栏显示真实城市名', domName === ownPick.name, `${domName} / ${ownPick.name}`);
+    check('信息栏 11 项（= 原版 Ys() 行数）', statsCount === 11, `${statsCount} 项`);
+    check('左侧 4 大类 + 内政 14 条目（原版顺序）',
+      railCount === 4 && itemCount === 14, `大类 ${railCount} / 当前条目 ${itemCount}`);
+
+    // ---- 面板展开时，遮挡区点击不得穿透到 3D（收起后允许点地图，见后文）
+    const clicksBeforeUI = await evaluate('window.__P2__.interaction.stats.clicks');
+    await clickAt(stageRect.left + stageRect.width - 8, stageRect.top + stageRect.height - 8);
+    await sleep(200);
+    const clicksAfterUI = await evaluate('window.__P2__.interaction.stats.clicks');
+    check('城市界面遮挡区点击不穿透 3D 场景', clicksAfterUI === clicksBeforeUI,
+      `clicks ${clicksBeforeUI} -> ${clicksAfterUI}`);
+
+    // ---- 执行「内政·开垦」：选武将 -> 原版结算 -> 数值真实变化
+    const cityBefore = JSON.parse(await evaluate(`JSON.stringify(window.__P2__.adapter.getCity(${ownPick.id}))`));
+    const officerInfo = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const c = window.__P3__.cityUI;
+      return c.officerIds(${ownPick.id}).ids.map((id) => ({
+        id, name: c.officerName(id), cells: c.officerRow(id).cells,
+      }));
+    })())`));
+    const capable = officerInfo
+      .map((o) => ({ ...o, thew: Number(o.cells[7]) || 0 }))
+      .filter((o) => o.thew >= 8)
+      .sort((a, b) => b.thew - a.thew);
+    const chosen = capable[0] || officerInfo[0] || null;
+
+    await clickEl('#p3-rail .p3-rail-btn:nth-child(1)');
+    await clickEl('#p3-list button.p3-item[data-action-id="1"]');
+    const officerDialogUp = await waitFor(async () =>
+      (await evaluate('!!document.querySelector(".p3-officer-modal")') ? true : null), 6000, '武将弹窗').catch(() => null);
+    check('点击「开垦」弹出独立武将选择窗口（原版 Ls）', officerDialogUp === true);
+
+    let farmingDelta = null;
+    if (officerDialogUp && chosen) {
+      await send('Page.enable');
+      const dlgShot = await send('Page.captureScreenshot', { format: 'png' });
+      const dlgPath = path.join(os.tmpdir(), 'sgby-p3-officer-dialog.png');
+      fs.writeFileSync(dlgPath, Buffer.from(dlgShot.result.data, 'base64'));
+      check('独立武将选择弹窗截图已生成', fs.statSync(dlgPath).size > 10000, dlgPath);
+
+      const rowsShown = await evaluate('document.querySelectorAll(".p3-officer-modal tbody tr").length');
+      const colsShown = await evaluate('document.querySelectorAll(".p3-officer-modal thead th").length');
+      check('武将弹窗候选 = 原版 ss() 人数、列 = 姓名+13 项',
+        rowsShown === officerInfo.length && colsShown === 14,
+        `候选 ${rowsShown}/${officerInfo.length} 人，列 ${colsShown}`);
+
+      await clickEl(`.p3-officer-modal tr[data-officer-id="${chosen.id}"]`);
+      await clickEl('.p3-officer-modal .p3-modal-foot button.p3-btn-primary');
+
+      // 原版 gi()->vs() 会弹结果提示；点确定后 mi() 的 while 循环会再次打开武将列表
+      const resultUp = await waitFor(async () => {
+        const t = await evaluate(`(() => {
+          const m = document.querySelector('.p3-overlay .p3-modal');
+          if (!m || m.classList.contains('p3-officer-modal')) return null;
+          return m.querySelector('.p3-modal-title')?.textContent || '';
+        })()`);
+        return t || null;
+      }, 8000, '原版结果提示').catch(() => null);
+      check('原版指令结果以提示弹窗返回（gi->vs）', !!resultUp, resultUp || '未出现');
+      if (resultUp) await tapText('确定');
+      await sleep(400);
+
+      // 再取消武将列表，结束这条指令（原版 while 循环）
+      const reopen = await waitFor(async () =>
+        (await evaluate('!!document.querySelector(".p3-officer-modal")') ? true : null), 6000, '武将列表重开').catch(() => null);
+      if (reopen) {
+        await tapText('取消', '.p3-officer-modal');
+        await sleep(500);
+      }
+      const cityAfter = JSON.parse(await evaluate(`JSON.stringify(window.__P2__.adapter.getCity(${ownPick.id}))`));
+      farmingDelta = cityAfter.farming - cityBefore.farming;
+      check('原版结算写回真实城市数据（农业上升）',
+        capable.length ? farmingDelta > 0 : true,
+        `农业 ${cityBefore.farming} -> ${cityAfter.farming}（差 ${farmingDelta}），金钱 ${cityBefore.money} -> ${cityAfter.money}，候选体力≥8 的 ${capable.length} 人`);
+    }
+
+    // ---- 原版 ka() 每条指令结束后必然回到 zs() 选城（源码 L7426-7447）：
+    //      城市面板应收成提示条、让出地图，而不是假装菜单还在。
+    const afterAction = await waitFor(async () => {
+      const collapsed = await evaluate('document.querySelector(".p3-frame")?.classList.contains("p3-collapsed") ?? false');
+      const p = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getInputPhase())'));
+      return (p.kind === 'zs' && collapsed) ? p : null;
+    }, 9000, '指令结束回到 zs').catch(() => null);
+    check('指令结束后原版回到 zs()，面板自动收起让出地图', !!afterAction,
+      afterAction ? `kind=${afterAction.kind}` : '未收起');
+
+    const reopenByClick = async () => {
+      // 收起条位于底部中间：逐城尝试，只点击「当前真正落在 WebGL 画布上」的那个点
+      const hits = JSON.parse(await evaluate(`JSON.stringify(${JSON.stringify(ownList.map((c) => [c.id, c.screen.x, c.screen.y]))}.map(([id, x, y]) => {
+        const e = document.elementFromPoint(x, y);
+        return [id, e ? e.tagName : null];
+      }))`));
+      for (const c of ownList) {
+        if (!hits.find((h) => h[0] === c.id && h[1] === 'CANVAS')) continue;
+        await clickAt(c.screen.x, c.screen.y);
+        const ok = await waitFor(async () => {
+          const collapsed = await evaluate('document.querySelector(".p3-frame")?.classList.contains("p3-collapsed") ?? true');
+          const s = await p3Status();
+          return s.open && !collapsed ? s : null;
+        }, 5000, '重新打开城市菜单').catch(() => null);
+        if (ok) return ok;
+      }
+      return null;
+    };
+    const menuAgain = await reopenByClick();
+    check('再次点击城市可重新进入菜单（原版每轮从 zs 开始）', !!menuAgain,
+      menuAgain ? `城 #${menuAgain.cityId}` : '超时');
+
+    if (menuAgain) {
+      await send('Page.enable');
+      const cityShot = await send('Page.captureScreenshot', { format: 'png' });
+      const cityShotPath = path.join(os.tmpdir(), 'sgby-p3-city-ui.png');
+      fs.writeFileSync(cityShotPath, Buffer.from(cityShot.result.data, 'base64'));
+      check('城市管理界面截图已生成', fs.statSync(cityShotPath).size > 10000, cityShotPath);
+
+      // 武将表（面板内的只读视图）——必须在面板展开时检查
+      await clickEl('#p3-detail .p3-tab:nth-child(2)');
+      const tabNow = await evaluate('window.__P3__.getStatus().tab');
+      const inlineCols = await evaluate('document.querySelectorAll("#p3-detail .p3-officer-table thead th").length');
+      const inlineRows = await evaluate('document.querySelectorAll("#p3-detail .p3-officer-table tbody tr").length');
+      const liveIds = await evaluate(`window.__P3__.cityUI.officerIds(${ownPick.id}).ids.length`);
+      check('武将页签可切换', tabNow === 'officers', String(tabNow));
+      check('城市武将表 = 姓名 + 原版 13 列', inlineCols === 14 && inlineRows === liveIds,
+        `${inlineRows} 行 × ${inlineCols} 列（当前 ss() ${liveIds} 人）`);
+      check('执行指令后武将离开城市队列（原版 Zr() 从 PersonQueue 移除）',
+        liveIds === officerInfo.length - (farmingDelta > 0 ? 1 : 0),
+        `指令前 ${officerInfo.length} 人 -> 现在 ${liveIds} 人（农业 ${farmingDelta}）`);
+      await clickEl('#p3-detail .p3-tab:nth-child(1)');   // 回到概览
+
+      const noopBefore = JSON.parse(await evaluate(`JSON.stringify(window.__P2__.adapter.getCity(${ownPick.id}))`));
+      await clickEl('#p3-rail .p3-rail-btn:nth-child(2)');            // 外交
+      const foreignItems = await evaluate('document.querySelectorAll("#p3-list button.p3-item").length');
+      await clickEl('#p3-list button.p3-item[data-action-id="18"]');  // 反间（原版无 case）
+      await sleep(1200);
+      const noopAfter = JSON.parse(await evaluate(`JSON.stringify(window.__P2__.adapter.getCity(${ownPick.id}))`));
+      const noopState = await p3Status();
+      check('外交 5 项与原版一致', foreignItems === 5, `${foreignItems} 项`);
+      check('指令 18（反间）原版 mi() 无分支：不弹窗、不改数据',
+        noopState.dialogs.open === 0 && noopAfter.money === noopBefore.money
+        && noopAfter.farming === noopBefore.farming,
+        `弹窗 ${noopState.dialogs.open} / 金钱 ${noopBefore.money}->${noopAfter.money} / 农业 ${noopBefore.farming}->${noopAfter.farming}`);
+    }
+
+    await send('Page.enable');
+    const collapsedShot = await send('Page.captureScreenshot', { format: 'png' });
+    const collapsedShotPath = path.join(os.tmpdir(), 'sgby-p3-city-collapsed.png');
+    fs.writeFileSync(collapsedShotPath, Buffer.from(collapsedShot.result.data, 'base64'));
+    check('城市界面收起态截图已生成（地图可点）', fs.statSync(collapsedShotPath).size > 10000, collapsedShotPath);
+
+    // ---- 退出：返回战略地图，原版 ei() 返回 255 -> 回到 zs()
+    const exitClicked = await clickEl('#p3-city .p3-head-btns button');
+    await sleep(300);
+    const exited = await waitFor(async () => {
+      const s = await p3Status();
+      return s.open ? null : s;
+    }, 8000, '关闭城市界面').catch(() => null);
+    check('返回战略地图：界面关闭（原版 ei() 返回 255）', !!exited && exited.open === false,
+      `点击命中=${exitClicked}`);
+    const backPhase = await waitFor(async () => {
+      const p = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getInputPhase())'));
+      return p.kind === 'zs' ? p : null;
+    }, 8000, '回到 zs()').catch(() => null);
+    check('退出后原版回到选城阶段（zs），3D 地图可继续操作', !!backPhase,
+      backPhase ? `kind=${backPhase.kind} canSelect=${backPhase.canSelectCity}` : '超时');
+  }
+
   const diag = await evaluate(`JSON.stringify({
     statusText: document.getElementById('status-text')?.textContent || '',
     dn: window.__SGBY_CORE__ ? {
@@ -387,7 +646,9 @@ try {
     libInfo: window.__SGBY_CORE__ && window.__SGBY_CORE__.Dn.lib ? {
       cityItems: window.__SGBY_CORE__.Dn.lib.itemCount(57),
       constLen: window.__SGBY_CORE__.Dn.lib.getItem(2,6)?.length ?? null
-    } : null
+    } : null,
+    coreFns: window.__SGBY_CORE__ && window.__SGBY_CORE__.fns ? Object.keys(window.__SGBY_CORE__.fns) : null,
+    p3: window.__P3__ ? window.__P3__.getStatus() : null
   })`);
   console.log('\n--- 内核诊断 ---\n' + diag);
   console.log('\n--- 页面日志（完整）---');
