@@ -38,9 +38,15 @@ export class BaseScene {
     if (this._disposed) throw new Error(`场景 ${this.id} 已销毁，不能再次进入`);
     this.context = { ...context };
     if (!this._built) { this._build(); this._built = true; }
+    // P2 修复：exit() 会取消该场景的全部订阅，因此每次 enter 都必须重建订阅。
+    // 子类把订阅放在 _onEnter()，不要放在只执行一次的 _build() 里。
+    this._onEnter(this.context);
     // SCENE_CHANGED 由 SceneManager 统一派发，避免同一切换被处理两次。
     return this;
   }
+
+  /** 每次 enter() 都会调用；子类覆写以建立/重建事件订阅。 */
+  _onEnter(_context) {}
 
   update(dt) {
     this.elapsed += dt;

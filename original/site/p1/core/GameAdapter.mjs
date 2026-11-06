@@ -18,7 +18,7 @@
  *     因此不支持的方法明确抛 UnsupportedError 并给出理由，绝不返回虚假成功。
  */
 import { EVENTS } from './EventManager.mjs';
-import { CORE_CONFIG } from './config.mjs';
+import { CORE_CONFIG, ORIGINAL_INPUT } from './config.mjs';
 
 export class UnsupportedError extends Error {
   constructor(method, reason, originalEntry) {
@@ -67,7 +67,9 @@ export class GameAdapter {
     this._restore = [];
     this._watchdog = null;
     this._cache = new Map();
-    this.stats = { syncCount: 0, inputHooks: 0, contextHooks: 0, lastSource: null };
+    this._waiterKind = 'unknown';   // P2：最近一次 waitMsg 的调用协程（只读诊断）
+    this.stats = { syncCount: 0, inputHooks: 0, contextHooks: 0, lastSource: null,
+      selectionRequests: 0, injectedMessages: 0 };
     this.capabilities = this._buildCapabilities();
   }
 
@@ -127,6 +129,17 @@ export class GameAdapter {
       const original = input.waitMsg;
       const self = this;
       input.waitMsg = function (...args) {
+        // P2：只读记录「谁在等待输入」。zs()/ei()/Ba() 都是压缩后保留的函数名，
+        // 同步调用栈里会出现 `at zs (`。用于避免在主菜单/城市菜单阶段误注入选城输入。
+        // 不改动原版返回值、不改动任何游戏状态。
+        let kind = 'unknown';
+        try {
+          const stack = new Error().stack || '';
+          if (/\bat\s+(?:async\s+)?zs\s*\(/.test(stack)) kind = 'zs';
+          else if (/\bat\s+(?:async\s+)?ei\s*\(/.test(stack)) kind = 'ei';
+          else if (/\bat\s+(?:async\s+)?Ba\s*\(/.test(stack)) kind = 'menu';
+        } catch (_) { /* 忽略：诊断信息不可用不影响原版逻辑 */ }
+        self._waiterKind = kind;
         return Promise.resolve(original.apply(this, args)).then((msg) => {
           self.stats.inputHooks++;
           self.sync({ source: 'input' });
@@ -279,6 +292,77 @@ export class GameAdapter {
     });
   }
 
+  /**
+   * P2：战略地图道路拓扑。把资源 59 的 8 方向有向连接合并成无向唯一边，
+   * 但保留每一侧原始的 directionIndex / distance（不丢任何原版信息）。
+   * 运行时只使用右表（getItem(59,1)）；左表 60 全文未被调用，见 P0 §3.3。
+   */
+  getCityLinks() {
+    const cities = this.core.Dn.g_Cities;
+    const edges = new Map();
+    for (let i = 0; i < cities.length; i++) {
+      for (const link of this.getCityConnections(i)) {
+        const to = link.cityId;
+        if (to === null || to < 0 || to >= cities.length || to === i) continue;
+        const from = Math.min(i, to), last = Math.max(i, to);
+        const key = `${from}-${last}`;
+        if (!edges.has(key)) edges.set(key, { from, to: last, forward: null, backward: null });
+        const edge = edges.get(key);
+        const rec = freeze({
+          from: i, to, dir: link.dir, directionIndex: link.directionIndex,
+          distance: link.distance, source: 'getItem(59,1)',
+        });
+        if (i === from) edge.forward = rec; else edge.backward = rec;
+      }
+    }
+    return freeze([...edges.values()].map((e) => freeze({
+      from: e.from, to: e.to, forward: e.forward, backward: e.backward,
+      source: 'getItem(59,1) 去重（双向原始记录保留）',
+    })));
+  }
+
+  /**
+   * P2：势力投影。原版没有独立势力表，势力 = 君主武将
+   * （Belong = 君主武将 index + 1，玩家 g_PlayerKing 同为武将 index，见 P0 §3.4）。
+   * 名称一律走原版 $n() / getStr(62)，不另造势力数据。
+   */
+  getFactions() {
+    const Dn = this.core.Dn, cities = Dn.g_Cities;
+    const ids = [...new Set(cities.map((c) => c.Belong))].sort((a, b) => a - b);
+    return freeze(ids.map((id) => {
+      let name = '';
+      if (id > 0) {
+        try { name = this.getOfficer(id - 1).name; }
+        catch (_) { name = this.core.lib.getStr(62, id) || ''; }
+      }
+      return freeze({
+        id, name,
+        isPlayer: id === Dn.g_PlayerKing + 1,
+        cityCount: cities.filter((c) => c.Belong === id).length,
+        source: 'Dn.g_Cities[].Belong + $n() / lib.getStr(62)',
+      });
+    }));
+  }
+
+  /**
+   * P2：原版战略地图光标（只读）。zs(Dn.g_CityPos) 与 qs() 共用该对象；
+   * citymap 由 qs() 按 城市布局(2,14) 填充，值为城市编号+1，0 表示空格。
+   * 这就是「原版选城结果」的可观测形式——不是表现层伪造的选中状态。
+   */
+  getCityCursor() {
+    const Dn = this.core.Dn, p = Dn.g_CityPos;
+    if (!p) throw new Error('Dn.g_CityPos 不存在（内核未初始化）');
+    const row = p.sety - p.y, col = p.setx;
+    const map = Dn.citymap;
+    const value = map && map[row] ? map[row][col] : 0;
+    return freeze({
+      setx: p.setx, sety: p.sety, x: p.x, y: p.y, row, col,
+      cityId: value ? value - 1 : null,
+      populated: !!(map && map.length),
+      source: 'Dn.g_CityPos + Dn.citymap (qs() L4179-4187 / zs() L4247)',
+    });
+  }
+
   // ========================================================== 只读：武将
   getOfficers(cityId) {
     const Dn = this.core.Dn, c = Dn.g_Cities[cityId];
@@ -395,6 +479,89 @@ export class GameAdapter {
     return true;
   }
 
+  /**
+   * P2：只读判断「原版此刻是否处于 zs() 选城输入循环」。
+   * 三重判据全部来自真实状态，缺一即拒绝注入，避免在主菜单/城市菜单里误触发输入：
+   *   1) l.input.waiters 非空（确实有协程在 await waitMsg）
+   *   2) 最近一次 waitMsg 的同步调用栈命中 `at zs (`（_installHooks 记录）
+   *   3) 已进剧本（g_YearDate>0）且不在指令上下文（window.__SGBY_CTX === 0）
+   */
+  getInputPhase() {
+    const input = this.core.l && this.core.l.input;
+    const Dn = this.core.Dn || {};
+    const waiting = !!(input && Array.isArray(input.waiters) && input.waiters.length > 0);
+    const inScenario = (Dn.g_YearDate || 0) > 0;
+    const inOrderContext = typeof window !== 'undefined' && !!window.__SGBY_CTX;
+    const kind = this._waiterKind || 'unknown';
+    const canSelectCity = waiting && kind === 'zs' && inScenario && !inOrderContext;
+    return freeze({
+      kind, waiting, inScenario, inOrderContext, canSelectCity,
+      reason: canSelectCity
+        ? '原版 zs() 正在等待选城输入'
+        : (!waiting ? '原版当前无协程等待输入'
+          : kind !== 'zs' ? `当前等待协程为 ${kind}，不是 zs()`
+            : !inScenario ? '尚未进入剧本（原版仍在主菜单）'
+              : '原版正处于指令上下文'),
+      source: 'l.input.waiters + waitMsg 调用栈 + Dn.g_YearDate + window.__SGBY_CTX',
+    });
+  }
+
+  /**
+   * P2：把 3D 城市点击交给**原版选城逻辑**。
+   *
+   * 原版不存在命令式 selectCity()（P1 已如实标注 UnsupportedError）；zs() 是
+   * `await waitMsg()` 的输入循环，只能用原版规定的输入协议驱动：
+   *   - 方向键（type:5, param:34/35/36/37）把 Dn.g_CityPos 光标逐格移到目标城
+   *   - intent='select' 时追加确认键 39，zs() L4299 `case C: if(o) return o-1`
+   *     才真正返回该城给 ka()（此时原版会按自身规则决定后续，表现层不介入）
+   *   - intent='cursor'（默认）只定位原版光标，不打开任何菜单，符合 P2 范围
+   *
+   * 所有消息经 sendInput -> class A.pushMsg，绝不直接写 Dn.g_Cities / g_CityPos。
+   * 返回体如实标注 injected 与原因，绝不伪造「原版已选中」。
+   */
+  requestCitySelection(cityId, { intent = 'cursor', maxSteps = 26 } = {}) {
+    const city = this.getCity(cityId);       // 触发 ID 越界校验，取真实逻辑坐标
+    const phase = this.getInputPhase();
+    if (!phase.canSelectCity) {
+      return freeze({ injected: false, cityId, intent, phase,
+        reason: `未注入原版输入：${phase.reason}`, source: 'getInputPhase()' });
+    }
+    if (intent !== 'cursor' && intent !== 'select') {
+      throw new RangeError(`未知 intent: ${intent}（可选 cursor / select）`);
+    }
+    const cur = this.getCityCursor();
+    const dx = city.position.x - cur.setx;
+    const dy = city.position.y - cur.sety;
+    const steps = Math.abs(dx) + Math.abs(dy);
+    if (steps > maxSteps) {
+      return freeze({ injected: false, cityId, intent, phase, steps,
+        reason: `导航步数 ${steps} 超过上限 ${maxSteps}`, source: 'getCityCursor()' });
+    }
+    const k = ORIGINAL_INPUT.keys;
+    const messages = [];
+    for (let n = 0; n < Math.abs(dx); n++) {
+      messages.push({ type: ORIGINAL_INPUT.keyType, param: dx > 0 ? k.right : k.left });
+    }
+    for (let n = 0; n < Math.abs(dy); n++) {
+      messages.push({ type: ORIGINAL_INPUT.keyType, param: dy > 0 ? k.down : k.up });
+    }
+    if (intent === 'select') {
+      messages.push({ type: ORIGINAL_INPUT.keyType, param: k.confirm });
+    }
+    for (const msg of messages) this.sendInput(msg);
+    this.stats.selectionRequests++;
+    this.stats.injectedMessages += messages.length;
+    return freeze({
+      injected: true, cityId, intent,
+      target: freeze({ ...city.position }),
+      cursorBefore: cur,
+      messageCount: messages.length,
+      messages: freeze(messages.map((m) => freeze(m))),
+      note: '消息已按原版输入协议投递；原版处理结果须由 getCityCursor() / __SGBY_CTX 事后观测，本返回值不代表原版已选中',
+      source: 'class A.pushMsg (L467) + zs() L4290-4305',
+    });
+  }
+
   /** 表现层显式通知选中事件（原版无对应事件源，不伪造「原版发出」）。 */
   notifyCitySelected(cityId) { this.events.emit(EVENTS.CITY_SELECTED, { cityId, source: 'presentation' }); }
   notifyUnitSelected(unitId) { this.events.emit(EVENTS.UNIT_SELECTED, { unitId, source: 'presentation' }); }
@@ -442,6 +609,10 @@ export class GameAdapter {
       getCities: read('Dn.g_Cities + lib'),
       getCity: read('Dn.g_Cities[cityId]'),
       getCityConnections: read('lib.getItem(59,1)'),
+      getCityLinks: read('getItem(59,1) 去重无向边，保留双向原始记录（P2）'),
+      getFactions: read('Dn.g_Cities[].Belong + $n()（P2，原版无独立势力表）'),
+      getCityCursor: read('Dn.g_CityPos + Dn.citymap（P2，原版选城结果）'),
+      getInputPhase: read('l.input.waiters + waitMsg 调用栈 + Dn.g_YearDate（P2）'),
       getCityActions: read('lib.getConst(37..40) + getItem(2,10/11)'),
       getOfficers: read('g_PersonsQueue + Dn.g_Persons'),
       getOfficer: read('Dn.g_Persons + $n()'),
@@ -450,6 +621,7 @@ export class GameAdapter {
       getMovementRange: read('Dn.g_FightPath（瞬时缓存，只透传）'),
       getAttackRange: read('Dn.g_FgtAtkRng（瞬时缓存，只透传）'),
       sendInput: freeze({ status: 'write', source: 'class A.pushMsg（原版规定入口）' }),
+      requestCitySelection: freeze({ status: 'write', source: 'P2：方向键/确认键经 pushMsg 驱动 zs()，需 getInputPhase().canSelectCity' }),
       selectCity: un('原版是输入循环，方向相反', 'zs() L4247'),
       executeCityAction: un('原版是协程 UI，无参数化入口', 'mi() L4609'),
       selectOfficer: un('原版是异步选择窗口', 'Ls() L3686'),

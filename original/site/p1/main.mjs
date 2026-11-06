@@ -17,6 +17,12 @@ import { WorldMapScene } from './scenes/WorldMapScene.mjs';
 import { CityScene } from './scenes/CityScene.mjs';
 import { BattleScene } from './scenes/BattleScene.mjs';
 import { THREE_VERSION, SCENE_IDS, INPUT_CONFIG } from './core/config.mjs';
+import { P2_VERSION } from '../p2/config.mjs';
+import { MapCoordinateSystem } from '../p2/MapCoordinateSystem.mjs';
+import { WorldCamera } from '../p2/WorldCamera.mjs';
+import { StrategicMapScene } from '../p2/StrategicMapScene.mjs';
+import { MapInteraction } from '../p2/MapInteraction.mjs';
+import { DebugPanel } from '../p2/DebugPanel.mjs';
 
 const $ = (id) => document.getElementById(id);
 const logEl = $('p1-log');
@@ -67,14 +73,23 @@ async function boot() {
   const phaseEl = $('p1-phase');
   const statusList = $('p1-status-list');
   const modal = $('p1-modal-overlay');
+  const p2Panel = $('p2-panel');
+  let mapScene = null;
+  let interaction = null;
+  let debugPanel = null;
 
   const events = new EventManager();
   const coordinate = new CoordinateSystem();
+  const mapCoordinate = new MapCoordinateSystem(coordinate);
   const cameraManager = new CameraManager({ THREE });
+  const worldCamera = new WorldCamera({ THREE, cameraManager });
   const assets = new AssetManager({ THREE });
   const renderManager = new RenderManager({
     THREE, container: stage, events,
-    onResize: (aspect) => cameraManager.onResize(aspect),
+    onResize: (aspect) => {
+      cameraManager.onResize(aspect);
+      worldCamera.fitAll(aspect);   // P2：保证 12x9 地图完整显示
+    },
   });
   const input = new InputManager({ container: stage });
   const core = window.__SGBY_CORE__;
@@ -82,42 +97,18 @@ async function boot() {
   const adapter = new GameAdapter({ core, events });
   const scenes = new SceneManager({ events, adapter });
 
-  const deps = { THREE, assets, events, coordinate, cameraManager, adapter, uiContainer: uiRoot };
-  scenes.register(SCENE_IDS.WORLD, () => new WorldMapScene(deps));
+  const deps = {
+    THREE, assets, events, coordinate, cameraManager, adapter, uiContainer: uiRoot,
+    worldCamera, mapCoordinate,
+  };
+  scenes.register(SCENE_IDS.WORLD, () => new StrategicMapScene(deps));
   scenes.register(SCENE_IDS.CITY, () => new CityScene(deps));
   scenes.register(SCENE_IDS.BATTLE, () => new BattleScene(deps));
 
-  // ---------------------------------------------------------- 输入 -> 相机
-  const raycaster = new THREE.Raycaster();
-  const ndc = new THREE.Vector2();
-  input.on('drag', ({ dx, dy }) => {
-    const cam = scenes.current && scenes.current.camera;
-    if (cam) cameraManager.pan(cam, -dx * INPUT_CONFIG.panPixelsToWorld, -dy * INPUT_CONFIG.panPixelsToWorld);
-  });
-  input.on('wheel', ({ deltaY }) => {
-    const cam = scenes.current && scenes.current.camera;
-    if (cam) cameraManager.zoom(cam, 1 - deltaY * INPUT_CONFIG.wheelZoomScale);
-  });
-  input.on('click', (p) => {
-    const s = scenes.current;
-    if (!s || s.id !== SCENE_IDS.WORLD || !s.camera) return;
-    ndc.set(p.ndcX, p.ndcY);
-    raycaster.setFromCamera(ndc, s.camera);
-    const hits = raycaster.intersectObjects(s.scene.children, true);
-    const hit = hits.find((h) => h.object.userData && Number.isInteger(h.object.userData.cityId));
-    if (hit) {
-      const cityId = hit.object.userData.cityId;
-      // 表现层选中事件：不写 Dn、不代表原版选城结果
-      adapter.notifyCitySelected(cityId);
-      log(`3D 拾取命中占位城 #${cityId} ${hit.object.userData.name}（表现层事件，非原版操作）`);
-    }
-  });
-  input.on('keydown', ({ key }) => {
-    if (key === 'r' || key === 'R') {
-      const cam = scenes.current && scenes.current.camera;
-      if (cam) { cameraManager.reset(cam); log('相机复位'); }
-    }
-  });
+  // ---------------------------------------------------------- 输入 -> P2 交互
+  // P1 的占位拾取/平移绑定已移除；统一由 MapInteraction（复用同一 InputManager）
+  // 在战略地图场景创建后绑定，避免重复监听与双重平移。
+  // interaction / mapScene 在 connect() 之后赋值（见启动顺序）。
 
   // ---------------------------------------------------------- 渲染循环
   let lastStatusAt = 0;
@@ -153,6 +144,13 @@ async function boot() {
       ['场景切换/拒绝', `${scenes.stats.switches} / ${scenes.stats.rejected}`],
       ['资源 缓存/命中/释放', `${assets.getStats().entries} / ${assets.getStats().cacheHits} / ${assets.getStats().released}`],
       ['状态同步次数', `${adapter.stats.syncCount}（来源 ${adapter.stats.lastSource || '—'}）`],
+      ['P2 城市 / 道路 / 旗帜', mapScene?.getDiagnostics()
+        ? `${mapScene.getDiagnostics().cities.cityCount} / ${mapScene.getDiagnostics().roads.edges} / ${mapScene.getDiagnostics().flags.flags}`
+        : '—'],
+      ['P2 地形', mapScene?.getDiagnostics()?.terrain?.degraded ? '降级占位' : '原版 108 帧图块'],
+      ['P2 选中城市', interaction?.selectedCityId === null || !interaction
+        ? '未选中' : `#${interaction.selectedCityId}`],
+      ['P2 原版联动', interaction ? interaction.intent : '—'],
     ];
     if (statusList) {
       statusList.replaceChildren();
@@ -165,6 +163,33 @@ async function boot() {
       }
     }
     if (phaseEl) phaseEl.textContent = coreReady ? `运行中 · ${scenes.currentId}` : '等待原版资源包';
+    if (debugPanel && mapScene && coreReady) {
+      try { refreshDebug(); } catch (e) { /* 状态切换瞬间忽略 */ }
+    }
+  }
+
+  /** P2 调试面板快照：全部字段来自真实数据与渲染器诊断。 */
+  function refreshDebug() {
+    if (!debugPanel || !mapScene || !adapter.connected) return;
+    const city = adapter.getCity(debugPanel.inspectId);
+    const connections = adapter.getCityConnections(city.id);
+    const diag = mapScene.getDiagnostics();
+    debugPanel.update({
+      inspect: {
+        id: city.id, name: city.name, logical: { ...city.position },
+        world: mapScene.cityRenderer?.getCityWorldPosition(city.id) || null,
+        ownerId: city.ownerId,
+        faction: mapScene.flagRenderer?.getFactionStyle(city.ownerId) || null,
+        state: city.state,
+        connectionCount: connections.filter((c) => c.cityId !== null).length,
+        connections: connections.map((c) => ({ dir: c.dir, cityId: c.cityId, distance: c.distance })),
+      },
+      selection: interaction?.getSelectionInfo() || null,
+      diagnostics: diag,
+      highlighted: diag.roads?.highlighted ?? 0,
+      input: interaction?.getStats() || null,
+      intent: interaction?.intent || 'cursor',
+    });
   }
 
   // ---------------------------------------------------------- 自检套件
@@ -329,6 +354,108 @@ async function boot() {
     });
     suites.push(ast.summary());
 
+    // ---------------------------------------------------------- P2 战略地图自检
+    const p2 = makeSuite('P2 战略地图');
+    const citiesReal = adapter.getCities();
+    const diag = mapScene ? mapScene.getDiagnostics() : null;
+    p2.check('38 城完整且 ID 唯一', () => {
+      if (!diag) throw new Error('战略地图场景未创建');
+      const ids = mapScene.cityRenderer.cities.map((c) => c.id);
+      if (ids.length !== citiesReal.length || new Set(ids).size !== ids.length) {
+        throw new Error(`渲染 ${ids.length} 城 / 唯一 ${new Set(ids).size}`);
+      }
+      if (ids.some((id, i) => id !== citiesReal[i].id)) throw new Error('ID 顺序不一致');
+      return `${ids.length}/${citiesReal.length}`;
+    });
+    p2.check('城市名称/逻辑坐标来自原版', () => {
+      const bad = mapScene.cityRenderer.cities.filter((c, i) =>
+        c.name !== citiesReal[i].name
+        || c.position.x !== citiesReal[i].position.x
+        || c.position.y !== citiesReal[i].position.y);
+      if (bad.length) throw new Error(`不一致 ${bad.length} 城`);
+      return `${citiesReal.length}/${citiesReal.length}`;
+    });
+    p2.check('每城世界坐标 = 统一坐标转换', () => {
+      const bad = citiesReal.filter((c) => {
+        const w = coordinate.mapToWorld(c.position.x, c.position.y);
+        const p = mapScene.cityRenderer.getCityWorldPosition(c.id);
+        return !p || Math.abs(p.x - w.x) > 1e-9 || Math.abs(p.z - w.z) > 1e-9;
+      });
+      if (bad.length) throw new Error(`坐标异常 ${bad.map((c) => c.id).join(',')}`);
+      return `${citiesReal.length}/${citiesReal.length}`;
+    });
+    p2.check('道路 = 原版 54 条无向边', () => {
+      const links = adapter.getCityLinks();
+      if (links.length !== 54) throw new Error(`实际 ${links.length} 条`);
+      if (!mapScene.roadRenderer.links.every((e, i) => e.from === links[i].from && e.to === links[i].to)) {
+        throw new Error('端点与 getCityLinks() 不一致');
+      }
+      return `${links.length} 条 / ${diag.roads.directedRecords} 有向记录`;
+    });
+    p2.check('无额外/遗漏连接（8 方向逐城核对）', () => {
+      const expect = new Set();
+      for (const c of citiesReal) {
+        for (const l of adapter.getCityConnections(c.id)) {
+          if (l.cityId === null) continue;
+          expect.add(`${Math.min(c.id, l.cityId)}-${Math.max(c.id, l.cityId)}`);
+        }
+      }
+      const actual = new Set(mapScene.roadRenderer.links.map((e) => `${e.from}-${e.to}`));
+      if (expect.size !== actual.size || [...expect].some((k) => !actual.has(k))) {
+        throw new Error(`期望 ${expect.size} / 实际 ${actual.size}`);
+      }
+      return `${actual.size}/${expect.size}`;
+    });
+    p2.check('旗帜按原版 ownerId 分类', () => {
+      const bad = citiesReal.filter((c) => mapScene.flagRenderer._owner.get(c.id) !== c.ownerId);
+      if (bad.length) throw new Error(`归属不一致 ${bad.length} 城`);
+      const styles = mapScene.flagRenderer.getDiagnostics().styles;
+      const kinds = new Set(styles.map((s) => s.kind));
+      if (!kinds.has('empty')) throw new Error('缺少空城旗帜分类');
+      return `${styles.length} 种旗帜 / 分类 ${[...kinds].join(',')}`;
+    });
+    p2.check('地形来自原版 108 帧图块', () => {
+      if (diag.terrain.degraded) throw new Error(diag.terrain.source);
+      if (diag.terrain.frames !== 108) throw new Error(`实际 ${diag.terrain.frames} 帧`);
+      return `108 帧 / ${diag.terrain.props} 装饰体`;
+    });
+    p2.check('固定斜 45° 正交相机且禁旋转', () => {
+      const c = diag.camera;
+      if (!c || !c.fixed45 || c.projection !== 'orthographic' || c.rotationAllowed !== false) {
+        throw new Error(JSON.stringify(c));
+      }
+      return `${c.azimuthDeg}°/${c.elevationDeg}° zoom=${c.zoom.toFixed(2)}`;
+    });
+    p2.check('逻辑坐标 → 原版虚拟屏坐标可逆', () => {
+      let tested = 0, skipped = 0;
+      for (const c of citiesReal) {
+        const s = mapCoordinate.logicalToOriginalScreen(c.position.x, c.position.y, { x: 0, y: 0 });
+        if (!s) { skipped++; continue; }
+        const back = mapCoordinate.originalScreenToLogical(s.x, s.y, { x: 0, y: 0 });
+        if (back.col !== c.position.x || back.row !== c.position.y) {
+          throw new Error(`城 #${c.id} (${c.position.x},${c.position.y}) -> ${JSON.stringify(back)}`);
+        }
+        tested++;
+      }
+      if (!tested) throw new Error('无可用样本');
+      return `往返 ${tested} 城（原版视口外跳过 ${skipped}）`;
+    });
+    p2.check('战斗格坐标独立且可逆 32×32', () => {
+      for (const [col, row] of [[0, 0], [31, 31], [7, 23]]) {
+        const w = mapCoordinate.gridToWorld(col, row);
+        const g = mapCoordinate.worldToGrid(w.x, w.z);
+        if (g.col !== col || g.row !== row || g.error > 1e-9) throw new Error(`(${col},${row})`);
+      }
+      return '3/3';
+    });
+    p2.check('操作类接口仍如实标注不可用', () => {
+      const caps = adapter.getCapabilities();
+      if (caps.selectCity.status !== 'unavailable') throw new Error('selectCity 不应可用');
+      if (caps.requestCitySelection.status !== 'write') throw new Error('缺少原版输入联动');
+      return 'selectCity=unavailable / requestCitySelection=write';
+    });
+    suites.push(p2.summary());
+
     const pass = suites.reduce((n, s) => n + s.pass, 0);
     const fail = suites.reduce((n, s) => n + s.fail, 0);
     if (verbose) {
@@ -361,6 +488,35 @@ async function boot() {
   }
 
   // ---------------------------------------------------------- UI 绑定
+  debugPanel = new DebugPanel({
+    root: p2Panel,
+    callbacks: {
+      onInspect: (id) => log(`查看城市 #${id}（仅调试查看，不触发任何原版操作）`),
+      onToggleIntent: () => {
+        if (!interaction) return;
+        const next = interaction.setIntent(interaction.intent === 'cursor' ? 'select' : 'cursor');
+        log(`原版联动模式 -> ${next}${next === 'select' ? '（确认选城会进入原版菜单）' : ''}`);
+        refreshDebug();
+      },
+      onResetCamera: () => {
+        if (mapScene?.camera) worldCamera.reset(mapScene.camera);
+        log('相机复位');
+      },
+      onRunTests: async () => {
+        const r = await runSmoke();
+        log(`P2 自检重跑：${r.pass}/${r.pass + r.fail}`);
+        debugPanel.log(`自检 ${r.pass} PASS / ${r.fail} FAIL`);
+      },
+      onSync: () => {
+        if (!mapScene) return;
+        mapScene.flagRenderer.syncAll();
+        for (const c of adapter.getCities()) mapScene.refreshCity(c.id);
+        refreshDebug();
+        log('地图按原版实时数据全量同步（未写回任何游戏状态）');
+      },
+    },
+  });
+  $('p2-toggle-panel').addEventListener('click', () => p2Panel.classList.toggle('hidden'));
   $('p1-toggle-panel').addEventListener('click', () => panel.classList.toggle('hidden'));
   $('p1-toggle-legacy').addEventListener('click', () => {
     legacy.classList.toggle('hidden');
@@ -393,10 +549,19 @@ async function boot() {
 
   // ---------------------------------------------------------- 启动顺序
   document.body.dataset.p1Status = 'connecting';
-  log(`P1 启动；Three.js ${THREE_VERSION}；等待原版内核…`);
+  log(`P2 启动；Three.js ${THREE_VERSION} / P2 ${P2_VERSION}；等待原版内核…`);
   await adapter.connect();
   log(`内核已连接：城市 ${core.Dn.g_Cities.length}、武将 ${core.Dn.g_Persons.length}、资源库 ${!!core.lib}`);
-  scenes.switchTo(SCENE_IDS.WORLD, { reason: 'P1 启动' });
+  scenes.switchTo(SCENE_IDS.WORLD, { reason: 'P2 启动' });
+  mapScene = scenes.current;
+  debugPanel.fillCities(adapter.getCities());
+  interaction = new MapInteraction({
+    THREE, input, adapter, scene: mapScene, worldCamera,
+    getCamera: () => mapScene.camera,
+    isActive: () => scenes.currentId === SCENE_IDS.WORLD,
+  });
+  interaction.bind();
+  renderManager.resize();           // 触发 worldCamera.fit，保证整图可见
   renderStatus();
 
   const smoke = await runSmoke();
@@ -419,7 +584,31 @@ async function boot() {
       scenes: { current: scenes.currentId, ...scenes.stats },
       assets: assets.getStats(),
       adapter: { connected: adapter.connected, syncCount: adapter.stats.syncCount },
+      p2: mapScene ? mapScene.getDiagnostics() : null,
     }),
+  });
+
+  /** P2 调试/自动化入口（只读诊断 + 明确标注的表现层操作）。 */
+  window.__P2__ = Object.freeze({
+    version: P2_VERSION,
+    threeVersion: THREE_VERSION,
+    mapScene, interaction, worldCamera, mapCoordinate, debugPanel,
+    adapter, events, scenes, input, renderManager, cameraManager, assets,
+    getDiagnostics: () => mapScene.getDiagnostics(),
+    getSnapshot: () => ({
+      diagnostics: mapScene.getDiagnostics(),
+      selection: interaction.getSelectionInfo(),
+      input: interaction.getStats(),
+      renderer: renderManager.getInfo(),
+      phase: adapter.getInputPhase(),
+      cursor: adapter.getCityCursor(),
+    }),
+    pickCityAt: (ndcX, ndcY) => interaction.pick(ndcX, ndcY),
+    selectCity: (cityId, opts) => interaction.handleCityClick(cityId, opts),
+    setSelection: (cityId) => { adapter.notifyCitySelected(cityId); return mapScene.setSelection(cityId); },
+    cityScreenPosition: (cityId, viewport) => mapScene.cityScreenPosition(cityId, viewport),
+    runSmoke,
+    switchScene,
   });
   return window.__P1__;
 }

@@ -1,0 +1,40 @@
+/* ==========================================================================
+ * P2 战略地图调试面板样式（附加层，复用 P1 的 p1-card / p1-kv / p1-btn）
+ * 面板位于左侧，与 P1 右侧面板、右下角原版 2D 对照窗互不遮挡。
+ * ========================================================================== */
+#p2-panel {
+  position: absolute; top: 56px; left: 14px; z-index: 11;
+  width: 336px; max-height: calc(100vh - 76px);
+  overflow: auto;
+}
+#p2-panel.hidden { display: none; }
+#p2-panel h2 { margin-top: 12px; }
+#p2-log { max-height: 112px; }
+
+.p2-row {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 6px; margin-bottom: 8px;
+}
+.p2-row label { color: var(--p1-dim); font-size: 11px; }
+.p2-row select {
+  flex: 1 1 150px; min-width: 0;
+  background: #111318; color: var(--p1-text);
+  border: 1px solid var(--p1-line); border-radius: 4px;
+  padding: 4px 6px; font: inherit; font-size: 12px;
+}
+#p2-panel .p1-kv { grid-template-columns: 124px 1fr; }
+#p2-panel .p1-kv dd { font-variant-numeric: tabular-nums; }
+
+/* 场景提示条：显示当前 3D 场景与原版联动状态 */
+#p2-hint {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  bottom: 16px; z-index: 9; pointer-events: none;
+  padding: 6px 14px; border-radius: 999px;
+  background: rgba(12, 14, 17, .78); border: 1px solid var(--p1-line);
+  color: var(--p1-dim); font-size: 12px; white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  #p2-panel { width: 280px; }
+  #p2-hint { display: none; }
+}

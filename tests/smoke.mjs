@@ -85,14 +85,14 @@ try {
     URL,
   ], { stdio: 'ignore' });
 
-  const target = await waitFor(async () => {
+  const cdpTarget = await waitFor(async () => {
     const r = await fetch(`http://127.0.0.1:${DEVTOOLS_PORT}/json/list`);
     const list = await r.json();
     return list.find((t) => t.type === 'page' && t.url.includes('index3d.html'));
   }, 20000, 'CDP 目标页面');
-  check('无头 Edge 启动并连接 CDP', !!target.webSocketDebuggerUrl);
+  check('无头 Edge 启动并连接 CDP', !!cdpTarget.webSocketDebuggerUrl);
 
-  ws = new WebSocket(target.webSocketDebuggerUrl);
+  ws = new WebSocket(cdpTarget.webSocketDebuggerUrl);
   const pending = new Map();
   const exceptions = [];
   const consoleErrors = [];
@@ -178,6 +178,203 @@ try {
   await sleep(700);
   const sizeAfter = await evaluate('JSON.stringify(window.__P1__.getStatus().renderer.size)');
   check('窗口尺寸变化自动调整', sizeBefore !== sizeAfter, `${sizeBefore} -> ${sizeAfter}`);
+
+  // ==================================================================
+  // P2 战略地图：真实鼠标交互 / 拾取 / 相机 / 状态同步 / 截图
+  // ==================================================================
+  const clickAt = async (x, y) => {
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1 });
+  };
+  const dragAt = async (x1, y1, x2, y2) => {
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: x1, y: y1, button: 'left', clickCount: 1 });
+    for (let i = 1; i <= 6; i++) {
+      await send('Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x: x1 + (x2 - x1) * i / 6, y: y1 + (y2 - y1) * i / 6,
+        button: 'left', buttons: 1,
+      });
+    }
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x2, y: y2, button: 'left', clickCount: 1 });
+  };
+  const stageRect = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const r = document.getElementById('p1-stage').getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  })())`));
+
+  const p2Ready = await evaluate('!!window.__P2__');
+  check('P2 调试接口就绪', p2Ready === true);
+  const d2 = JSON.parse(await evaluate('JSON.stringify(window.__P2__.getDiagnostics())'));
+  check('P2 38 城 / 54 路 / 38 旗 / 108 帧原版地形',
+    d2.cities.cityCount === 38 && d2.roads.edges === 54
+    && d2.flags.flags === 38 && d2.terrain.frames === 108 && !d2.terrain.degraded,
+    `城${d2.cities.cityCount} 路${d2.roads.edges} 旗${d2.flags.flags} 地形帧${d2.terrain.frames}`);
+  check('P2 固定斜 45° 正交相机（禁旋转）',
+    d2.camera.fixed45 === true && d2.camera.projection === 'orthographic'
+    && d2.camera.rotationAllowed === false,
+    `${d2.camera.azimuthDeg}°/${d2.camera.elevationDeg}°`);
+
+  const candidates = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const vp = ${JSON.stringify(stageRect)};
+    const out = [];
+    for (const c of window.__P2__.adapter.getCities()) {
+      const s = window.__P2__.cityScreenPosition(c.id, vp);
+      if (s && s.visible) out.push({ id: c.id, x: s.x, y: s.y, ndcX: s.ndc.x, ndcY: s.ndc.y });
+    }
+    return out;
+  })())`));
+  const safe = candidates.filter((c) =>
+    c.x > stageRect.left + 370 && c.x < stageRect.left + stageRect.width - 290
+    && c.y > stageRect.top + 80 && c.y < stageRect.top + stageRect.height - 140);
+  const pool = safe.length ? safe : candidates;
+  const target = pool[Math.floor(pool.length / 2)];
+  check('全部 38 城可投影到屏幕', candidates.length === 38,
+    `${candidates.length}/38，可点区域 ${safe.length} 城`);
+
+  const pickId = await evaluate(`window.__P2__.pickCityAt(${target.ndcX}, ${target.ndcY})`);
+  check('Raycaster 拾取返回正确原版城市 ID', pickId === target.id,
+    `目标 #${target.id} -> ${pickId}`);
+  await clickAt(target.x, target.y);
+  await sleep(280);
+  const clickedId = await evaluate('window.__P2__.interaction.selectedCityId');
+  check('真实鼠标点击城市并识别 ID', clickedId === target.id, `#${clickedId}`);
+  const selDiag = JSON.parse(await evaluate('JSON.stringify(window.__P2__.getDiagnostics())'));
+  check('选中高亮 + 仅高亮原版相邻路径',
+    selDiag.selected === target.id && selDiag.roads.highlighted > 0
+    && selDiag.roads.highlighted <= 8,
+    `选中 #${selDiag.selected} 高亮 ${selDiag.roads.highlighted} 条`);
+
+  const selBeforeDrag = await evaluate('window.__P2__.interaction.selectedCityId');
+  await dragAt(target.x, target.y, target.x + 70, target.y + 40);
+  await sleep(200);
+  const selAfterDrag = await evaluate('window.__P2__.interaction.selectedCityId');
+  const drags = await evaluate('window.__P2__.interaction.stats.drags');
+  check('地图拖动不误触发城市选择',
+    selAfterDrag === selBeforeDrag && drags > 0,
+    `选中 ${selBeforeDrag}->${selAfterDrag}，drag 事件 ${drags}`);
+
+  const camBefore = JSON.parse(await evaluate('JSON.stringify(window.__P2__.worldCamera.getState(window.__P2__.mapScene.camera))'));
+  const logicBefore = await evaluate('JSON.stringify(window.__P2__.adapter.getCity(0).position)');
+  await send('Input.dispatchMouseEvent', {
+    type: 'mouseWheel', x: stageRect.left + stageRect.width / 2,
+    y: stageRect.top + stageRect.height / 2, deltaX: 0, deltaY: -420,
+  });
+  await sleep(200);
+  const camAfter = JSON.parse(await evaluate('JSON.stringify(window.__P2__.worldCamera.getState(window.__P2__.mapScene.camera))'));
+  const logicAfter = await evaluate('JSON.stringify(window.__P2__.adapter.getCity(0).position)');
+  check('滚轮缩放生效、受上下限约束、无画面跳动',
+    camAfter.zoom > camBefore.zoom && camAfter.zoom >= 0.6 && camAfter.zoom <= 3
+    && JSON.stringify(camAfter.target) === JSON.stringify(camBefore.target),
+    `zoom ${camBefore.zoom.toFixed(2)} -> ${camAfter.zoom.toFixed(2)}，target 未变`);
+  check('缩放不改变原版逻辑坐标', logicBefore === logicAfter, logicAfter);
+
+  for (let i = 0; i < 8; i++) await dragAt(stageRect.left + 600, stageRect.top + 300, stageRect.left + 300, stageRect.top + 180);
+  const camBound = JSON.parse(await evaluate('JSON.stringify(window.__P2__.worldCamera.getState(window.__P2__.mapScene.camera))'));
+  check('相机平移受边界限制',
+    Math.abs(camBound.target[0]) <= 9.001 && Math.abs(camBound.target[2]) <= 7.001,
+    `target=[${camBound.target.map((v) => v.toFixed(2)).join(',')}]`);
+
+  const btn = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const r = document.getElementById('p2-reset-cam').getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })())`));
+  const clicksBefore = await evaluate('window.__P2__.interaction.stats.clicks');
+  await clickAt(btn.x, btn.y);
+  await sleep(150);
+  const clicksAfter = await evaluate('window.__P2__.interaction.stats.clicks');
+  check('点击 HTML UI 不穿透到 3D 场景', clicksAfter === clicksBefore,
+    `clicks ${clicksBefore} -> ${clicksAfter}`);
+
+  // 切到战斗场景再切回：验证 P2 修复的「重复 enter 订阅重建」
+  await evaluate("window.__P1__.switchScene('battle')");
+  await evaluate("window.__P1__.switchScene('world')");
+  const subsAfter = await evaluate('window.__P2__.getDiagnostics().subscriptions');
+  await evaluate('window.__P2__.setSelection(5)');
+  const selAfterReenter = await evaluate('window.__P2__.getDiagnostics().selected');
+  check('场景切回后事件订阅仍有效', subsAfter > 0 && selAfterReenter === 5,
+    `订阅 ${subsAfter}，选中 #${selAfterReenter}`);
+
+  // 渲染层归属变化响应（只测旗帜材质切换，不写 Dn.g_Cities）
+  const ownerTest = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const p = window.__P2__, f = p.mapScene.flagRenderer, id = 3;
+    const real = p.adapter.getCity(id).ownerId;
+    const before = f._cloths.get(id).material.uuid;
+    f.updateOwner(id, 2);
+    const after = f._cloths.get(id).material.uuid;
+    const kind = f.getFactionStyle(2).kind;
+    f.updateOwner(id, real);
+    return { real, changed: before !== after, kind, restored: f._owner.get(id) === real };
+  })())`));
+  check('城市归属变化后旗帜颜色/图案可动态更新',
+    ownerTest.changed && ownerTest.restored,
+    `材质切换=${ownerTest.changed} 分类=${ownerTest.kind} 已恢复=${ownerTest.restored}`);
+
+  // 原版未处于 zs() 选城阶段时，必须拒绝注入输入（不伪造成功）
+  const phase = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getInputPhase())'));
+  const req = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.requestCitySelection(0, { intent: "cursor" }))'));
+  check('原版不在选城阶段时拒绝注入输入（如实标注）',
+    phase.canSelectCity === false && req.injected === false,
+    `${phase.reason} / ${req.reason}`);
+
+  const visualDiag = await evaluate(`JSON.stringify((() => {
+    const c = window.__P2__.mapScene.cityRenderer;
+    const item = c._labels.get(0), s = item && item.sprite;
+    let spriteCount = 0;
+    window.__P2__.mapScene.scene.traverse((o) => { if (o.isSprite) spriteCount++; });
+    let opaquePixels = 0;
+    if (s && s.material.map && s.material.map.image) {
+      const img = s.material.map.image;
+      const d = img.getContext('2d').getImageData(0, 0, img.width, img.height).data;
+      for (let i = 3; i < d.length; i += 4) if (d[i] > 0) opaquePixels++;
+    }
+    c._body.geometry.computeBoundingBox();
+    const bb = c._body.geometry.boundingBox;
+    return {
+      spriteCount, labelVisible: s?.visible, labelPos: s?.position.toArray(),
+      labelScale: s?.scale.toArray(), labelPixels: opaquePixels,
+      pickVisible: c._pick.visible,
+      bodyBBox: [bb.min.toArray(), bb.max.toArray()],
+      bodyColorAttr: !!c._body.instanceColor,
+      roadY: window.__P2__.mapScene.roadRenderer._base.geometry.attributes.position.array[1],
+    };
+  })())`);
+  console.log('\n--- 视觉层诊断 ---\n' + visualDiag);
+
+  await send('Page.enable');
+  const shot = await send('Page.captureScreenshot', { format: 'png' });
+  const shotPath = path.join(os.tmpdir(), 'sgby-p2-strategic-map.png');
+  fs.writeFileSync(shotPath, Buffer.from(shot.result.data, 'base64'));
+  check('3D 战略地图截图已生成', fs.statSync(shotPath).size > 10000, shotPath);
+
+  // ---- 真实开局：验证「3D 点击 -> 原版 zs() 选城输入协议」确实可用 ----
+  // 只在临时浏览器进程内推进原版流程（不写仓库文件、不写存档、不改任何规则）。
+  let bootSteps = 0;
+  let openState = null;
+  for (; bootSteps < 12; bootSteps++) {
+    const s = JSON.parse(await evaluate(`JSON.stringify({
+      year: window.__SGBY_CORE__.Dn.g_YearDate,
+      phase: window.__P2__.adapter.getInputPhase()
+    })`));
+    openState = s;
+    if (s.year > 0 && s.phase.canSelectCity) break;
+    await evaluate('window.__P2__.adapter.sendInput({ type: 5, param: 39 })');
+    await sleep(450);
+  }
+  const opened = openState?.year > 0 && openState?.phase.canSelectCity === true;
+  check('脚本化真实开局后原版进入 zs() 选城阶段', opened,
+    `按键 ${bootSteps} 次 / year=${openState?.year} / kind=${openState?.phase?.kind} / waiting=${openState?.phase?.waiting}`);
+  if (opened) {
+    const cur = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getCityCursor())'));
+    const city = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const p = window.__P2__.adapter;
+      return p.getCities().find((c) => c.position.x !== ${cur.setx} || c.position.y !== ${cur.sety});
+    })())`));
+    const req = JSON.parse(await evaluate(`JSON.stringify(window.__P2__.adapter.requestCitySelection(${city.id}, { intent: "cursor" }))`));
+    await sleep(1800);
+    const after = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getCityCursor())'));
+    check('3D 选城请求经原版输入协议驱动 zs() 光标',
+      req.injected === true && after.setx === city.position.x && after.sety === city.position.y,
+      `目标 #${city.id}(${city.position.x},${city.position.y}) 投递 ${req.messageCount ?? 0} 键 -> 原版光标 (${after.setx},${after.sety}) 城 #${after.cityId ?? '—'}`);
+  }
 
   const diag = await evaluate(`JSON.stringify({
     statusText: document.getElementById('status-text')?.textContent || '',

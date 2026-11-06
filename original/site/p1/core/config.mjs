@@ -96,3 +96,19 @@ export const CORE_CONFIG = Object.freeze({
   readyPollMs: 50,
   syncWatchdogMs: 500,   // 低频兜底 diff；渲染循环不读游戏数据
 });
+
+/**
+ * P2 追加：原版输入协议常量（唯一权威数值来源）。
+ * 依据还原副本 sgby.pretty.js：
+ *   L332   key codes 上34/下35/左36/右37/确认39/返回40
+ *   L298-312 pointer param 1按下/2抬起/3移动/4取消，u()/f() 判定
+ *   L467-468 class A.pushMsg/waitMsg；P0 §6.4 消息格式 {type:5|16,param,x,y}
+ *   L4290-4305 zs() 消费方向键移动光标、确认键返回当前城市
+ */
+export const ORIGINAL_INPUT = Object.freeze({
+  keyType: 5,
+  pointerType: 16,
+  keys: Object.freeze({ up: 34, down: 35, left: 36, right: 37, confirm: 39, cancel: 40 }),
+  pointer: Object.freeze({ down: 1, up: 2, move: 3, cancel: 4 }),
+  source: 'sgby.pretty.js L332 / L298-312 / L467-468 / L4290-4305',
+});
