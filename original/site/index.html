@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>三国霸业 - 步步高电子词典经典</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230c0e11'/%3E%3Ctext x='16' y='24' font-size='21' text-anchor='middle' fill='%23e0b04a'%3E%E9%9C%B8%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <div id="screen-wrap">
+    <canvas id="screen" width="240" height="320"></canvas>
+  </div>
+  <div id="status-bar">
+    <span id="status-text">加载中…</span>
+    <span id="status-actions">
+      <button class="mini-btn menu-btn" id="menu-btn">菜单</button>
+      <span id="scale-controls">
+        <button class="mini-btn" id="scale-down">－</button>
+        <span id="scale-label">×5</span>
+        <button class="mini-btn" id="scale-up">＋</button>
+      </span>
+    </span>
+  </div>
+  <div id="touch-controls">
+    <button class="key" data-key="esc">返回</button>
+    <div class="dpad">
+      <button class="key" data-key="up" aria-label="上">▲</button>
+      <button class="key" data-key="left" aria-label="左">◀</button>
+      <button class="key" data-key="down" aria-label="下">▼</button>
+      <button class="key" data-key="right" aria-label="右">▶</button>
+    </div>
+    <button class="key" data-key="enter">确认</button>
+  </div>
+  <div id="help-note">触摸：轻点选择/确认 · 拖动滚动列表或平移地图 · 轻点画面跳过动画 · 地图底部按钮条：“信息”帮助、“查找”看形势图<br>键盘：<b>W/A/S/D</b> 上左下右 · <b>E</b> 确认（同 Enter） · <b>Q</b> 返回（同 Esc） · <b>F</b> 数量框“最大” · 方向键/Enter/Esc 同样可用 · Tab 帮助 · PgUp/PgDn 翻页 · M 形势图 · 安卓返回键=返回（连按四次退出）</div>
+</div>
+<script type="module" src="sgby.min.js"></script>
+<script src="local-bridge.js"></script>
+</body>
+</html>

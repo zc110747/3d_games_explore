@@ -1,0 +1,17 @@
+{
+  "name": "三国霸业",
+  "slug": "sanguo-bawang-web",
+  "version": "1.1.0",
+  "platform": "web",
+  "ui": "web",
+  "builtAt": "2026-11-05T14:11:00.085Z",
+  "source": {
+    "packSha1": "e7f62335f8c6d96dba1959f19110148260d464ed",
+    "packSize": 6372980,
+    "packEntries": 436
+  },
+  "payload": {
+    "files": 13,
+    "bytes": 8308368
+  }
+}

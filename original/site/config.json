@@ -1,0 +1,4 @@
+{
+  "_comment": "pack：资源包地址。留空 = 本目录 assets/game.zip；可填完整 zip 地址，或以 / 结尾的目录（自动接 game.zip）。跨域需远端允许 CORS。?pack= 参数优先于本文件。",
+  "pack": ""
+}
