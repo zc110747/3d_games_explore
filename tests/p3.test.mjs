@@ -168,7 +168,7 @@ test('真实城市数据仍是 38 城 / 200 将（P0 基线）', () => {
 });
 
 // ---------------------------------------------------------------- B. 生成物事实
-test('sgby.core.js = min.js + 7 处改名 + 桥接；7 个 shim 与 7 个 *Orig 都在', () => {
+test('sgby.core.js = min.js + 9 处改名 + 桥接；9 个 shim 与 9 个 *Orig 都在', () => {
   const min = fs.readFileSync(MIN_JS, 'utf8');
   const out = fs.readFileSync(CORE_JS, 'utf8');
   const at = out.indexOf('/* === SGBY-P1-CORE-BRIDGE START');
@@ -182,6 +182,9 @@ test('sgby.core.js = min.js + 7 处改名 + 桥接；7 个 shim 与 7 个 *Orig 
     ['async function HsOrig(t,e,n){', 'async function Hs(t,e,n){'],
     ['async function GsOrig(t){', 'async function Gs(t){'],
     ['async function kaOrig(){', 'async function ka(){'],
+    // P4 追加：战斗初始化 / 整场战斗（只通知表现层，不改返回值）
+    ['async function yoOrig(){', 'async function yo(){'],
+    ['async function UoOrig(){', 'async function Uo(){'],
   ];
   // 前缀还原后必须与原文逐字节一致
   let restored = out.slice(0, at);

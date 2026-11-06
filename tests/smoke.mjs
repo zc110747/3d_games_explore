@@ -71,8 +71,9 @@ try {
     origHtml.includes('sgby.min.js') && !origHtml.includes('sgby.core.js'));
   const minJs = fs.readFileSync(path.join(ORIGINAL, 'site', 'sgby.min.js'));
   const coreJs = fs.readFileSync(path.join(ORIGINAL, 'site', 'sgby.core.js'));
-  // 不变量：core.js 去掉桥接尾注、把 7 处控件改名反向还原后，必须与 min.js 逐字节相同。
+  // 不变量：core.js 去掉桥接尾注、把 9 处改名反向还原后，必须与 min.js 逐字节相同。
   // 这比「前缀相同」更强：任何额外改动都会被抓到。
+  // P3 接管 7 个 UI 控件，P4 追加 yo/Uo 两个战斗生命周期钩子 -> 共 9 处。
   const RENAMES = [
     ['async function $rOrig(t,e,n){', 'async function $r(t,e,n){'],
     ['async function LsOrig(t,e,n,r,s,i,st){', 'async function Ls(t,e,n,r,s,i,st){'],
@@ -81,13 +82,15 @@ try {
     ['async function HsOrig(t,e,n){', 'async function Hs(t,e,n){'],
     ['async function GsOrig(t){', 'async function Gs(t){'],
     ['async function kaOrig(){', 'async function ka(){'],
+    ['async function yoOrig(){', 'async function yo(){'],
+    ['async function UoOrig(){', 'async function Uo(){'],
   ];
   const coreText = coreJs.toString('utf8');
   const bridgeAt = coreText.indexOf('/* === SGBY-P1-CORE-BRIDGE START');
   let restored = bridgeAt > 0 ? coreText.slice(0, bridgeAt) : '';
   for (const [from, to] of RENAMES) restored = restored.split(from).join(to);
   const sameAsSource = restored.replace(/\s+$/, '') === minJs.toString('utf8').replace(/\s+$/, '');
-  check('sgby.core.js = sgby.min.js + 7 处控件改名 + 桥接尾注（业务代码零改动）',
+  check('sgby.core.js = sgby.min.js + 9 处改名 + 桥接尾注（业务代码零改动）',
     sameAsSource && bridgeAt > 0,
     `min=${minJs.length}B core=${coreJs.length}B delta=${coreJs.length - minJs.length}B 还原一致=${sameAsSource}`);
 
@@ -633,6 +636,322 @@ try {
     }, 8000, '回到 zs()').catch(() => null);
     check('退出后原版回到选城阶段（zs），3D 地图可继续操作', !!backPhase,
       backPhase ? `kind=${backPhase.kind} canSelect=${backPhase.canSelectCity}` : '超时');
+  }
+
+  // ==================================================================
+  // P4 战斗地图：真实出征 -> 原版指令队列 -> 原版 Uo() -> 3D 战斗场景
+  // ==================================================================
+  const p4Status = async () => JSON.parse(await evaluate('JSON.stringify(window.__P4__.getStatus())'));
+  const tapBtn = async (scope, matcher) => evaluate(`(() => {
+    const root = document.querySelector(${JSON.stringify(scope)});
+    if (!root) return false;
+    const b = [...root.querySelectorAll('button')].find((x) => ${matcher});
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  const dismissAnyModal = async () => {
+    const hit = await tapBtn('.p3-modal', "/确定|关闭|确认/.test(x.textContent)");
+    if (hit) await sleep(180);
+    return hit;
+  };
+
+  let battleReady = null;
+  let p4Enemy = null;
+  let p4Own = null;
+  const p4Boot = await p4Status();
+  check('P4 调试接口就绪（内核 yo/Uo 钩子）', !!p4Boot && p4Boot.phase === 'idle',
+    `phase=${p4Boot.phase} kernelEvents=${p4Boot.kernelEvents}`);
+
+  // 出征必须满足原版 hi()：目标城在 getItem(59,1) 的相邻表里。
+  // 因此先找一对「己方城 + 相邻敌方城」且都在屏幕上可见的组合。
+  const p4Plan = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const a = window.__P2__.adapter, vp = ${JSON.stringify(stageRect)};
+    const me = a.getGameState().playerKing + 1;
+    const usable = (s) => s && s.visible
+      && s.x > vp.left + 360 && s.x < vp.left + vp.width - 40
+      && s.y > vp.top + 90 && s.y < vp.top + vp.height - 150;
+    for (const c of a.getCities()) {
+      if (c.ownerId !== me) continue;
+      const cs = window.__P2__.cityScreenPosition(c.id, vp);
+      if (!usable(cs)) continue;
+      for (const l of a.getCityConnections(c.id)) {
+        if (l.cityId === null) continue;
+        const t = a.getCity(l.cityId);
+        if (!t.ownerId || t.ownerId === me) continue;
+        const ts = window.__P2__.cityScreenPosition(t.id, vp);
+        if (!usable(ts)) continue;
+        return {
+          own: { id: c.id, name: c.name, x: cs.x, y: cs.y },
+          enemy: { id: t.id, name: t.name, ownerId: t.ownerId, x: ts.x, y: ts.y },
+        };
+      }
+    }
+    return null;
+  })())`));
+  check('找到可出征的组合（己方城 + 原版相邻敌方城）', !!p4Plan,
+    p4Plan ? `#${p4Plan.own.id} ${p4Plan.own.name} -> #${p4Plan.enemy.id} ${p4Plan.enemy.name}` : '无');
+
+  if (opened && p4Plan) {
+    p4Own = p4Plan.own;
+    // ---- 重新进入城市菜单
+    await evaluate(`window.__P2__.selectCity(${p4Own.id})`);
+    const menu2 = await waitFor(async () => {
+      const s = await p3Status();
+      return s.open && s.cityId === p4Own.id ? s : null;
+    }, 9000, '城市菜单（出征）').catch(() => null);
+    check('再次进入城市菜单（P4 出征前置）', !!menu2, menu2 ? `城 #${menu2.cityId}` : '超时');
+
+    if (menu2) {
+      // 用 DOM click 而不是坐标点击：出征是 P4 的前置步骤，
+      // 这里要的是「稳定进入下一个原版协程」，命中测试已由 P3 用例覆盖。
+      await tapBtn('#p3-rail', "/军备/.test(x.textContent)");
+      const armsReady = await waitFor(async () =>
+        (await evaluate('!!document.querySelector(\'#p3-list button.p3-item[data-action-id="27"]\')') ? true : null),
+      5000, '军备列表').catch(() => null);
+      const armsItems = await evaluate('document.querySelectorAll("#p3-list button.p3-item").length');
+      check('军备 5 项且含出征（原版 getConst(40)）', armsReady === true && armsItems === 5,
+        `${armsItems} 项，出征按钮=${armsReady === true}`);
+      await tapBtn('#p3-list', "x.dataset.actionId === '27'");         // 出征
+      await sleep(300);
+      const marchProbe = JSON.parse(await evaluate(`JSON.stringify({
+        group: window.__P3__.getStatus().group,
+        items: [...document.querySelectorAll('#p3-list button.p3-item')].map((b) => b.dataset.actionId),
+        modal: !!document.querySelector('.p3-modal'),
+        officerModal: !!document.querySelector('.p3-officer-modal'),
+      })`));
+      console.log('\n--- 出征探针 ---\n' + JSON.stringify(marchProbe));
+
+      const pick1 = await waitFor(async () =>
+        (await evaluate('!!document.querySelector(".p3-officer-modal")') ? true : null), 8000, '出征选将').catch(() => null);
+      check('出征弹出武将选择窗口（原版 Ls）', pick1 === true);
+      if (pick1) {
+        await evaluate(`(() => {
+          const tr = document.querySelector('.p3-officer-modal tbody tr');
+          if (tr) tr.click();
+          return !!tr;
+        })()`);
+        await sleep(150);
+        await tapBtn('.p3-officer-modal', "/确认/.test(x.textContent)");
+        await sleep(250);
+        const pick2 = await waitFor(async () =>
+          (await evaluate('!!document.querySelector(".p3-officer-modal")') ? true : null), 6000, '第二次选将').catch(() => null);
+        if (pick2) await tapBtn('.p3-officer-modal', "/取消/.test(x.textContent)");
+        await sleep(400);
+      }
+
+      const foodUp = await waitFor(async () =>
+        (await evaluate('!!document.querySelector(".p3-modal .p3-input")') ? true : null), 6000, '粮草输入').catch(() => null);
+      check('出征粮草输入走原版 Hs()', foodUp === true);
+      if (foodUp) {
+        const max = Number(await evaluate('document.querySelector(".p3-modal .p3-input").max'));
+        const v = Math.max(1, Math.min(max, 300));
+        await evaluate(`(() => {
+          const i = document.querySelector('.p3-modal .p3-input');
+          if (!i) return false;
+          i.value = String(${v});
+          i.dispatchEvent(new Event('input', { bubbles: true }));
+          return true;
+        })()`);
+        await tapBtn('.p3-modal', "/确定/.test(x.textContent)");
+        await sleep(600);
+      }
+      await dismissAnyModal();     // 原版 vs()：出兵提示
+      await sleep(400);
+
+      // ---- 选目标城：必须是原版连接表里的相邻敌方城（hi() 会拒绝非相邻）
+      p4Enemy = p4Plan.enemy;
+      check('出征目标 = 原版相邻敌方城', !!p4Enemy,
+        p4Enemy ? `#${p4Enemy.id} ${p4Enemy.name}（属 ${p4Enemy.ownerId}）` : '无相邻敌方城');
+
+      if (p4Enemy) {
+        const intent = await evaluate('window.__P2__.interaction.intent');
+        check('城市循环内 3D 点击意图 = 原版确认选城', intent === 'select', intent);
+        await clickAt(p4Enemy.x, p4Enemy.y);
+        await sleep(1800);
+        await dismissAnyModal();     // 原版 Ms(94)：情报提示
+        await sleep(700);
+        const queue = JSON.parse(await evaluate(`JSON.stringify({
+          orders: window.__SGBY_CORE__.Dn.g_OrderQueue.filter((o) => o.OrderId === 27).length,
+          food: ${JSON.stringify(0)},
+        })`));
+        check('出征指令进入原版指令队列（OrderId=27）', queue.orders >= 1, `${queue.orders} 条`);
+
+        // ---- 退出城市阶段（zs 返回 255）-> 原版 Ma() 菜单 -> 继续 -> wa() 处理指令
+        await evaluate('window.__P2__.adapter.sendInput({ type: 5, param: 40 })');
+        await sleep(1500);
+        await evaluate('window.__P2__.adapter.sendInput({ type: 5, param: 39 })');
+        battleReady = await waitFor(async () => {
+          const s = await p4Status();
+          return s.active && s.loaded ? s : null;
+        }, 30000, '原版 Uo() 战斗').catch(() => null);
+        check('原版 Uo() 进入战斗 -> 3D 战斗场景按真实战况装载', !!battleReady,
+          battleReady
+            ? `地图 ${battleReady.diagnostics.map.width}x${battleReady.diagnostics.map.height}`
+            : `phase=${(await p4Status()).phase}`);
+      }
+    }
+  }
+
+  if (battleReady) {
+    const d = battleReady.diagnostics;
+    check('战斗地图 = 原版 32x32 / 1024 格 / 46 帧图块',
+      d.map.width === 32 && d.map.height === 32 && d.tiles.cells === 1024
+      && d.tiles.frames === 46 && d.tiles.degraded === false,
+      `${d.map.width}x${d.map.height} 格${d.tiles.cells} 帧${d.tiles.frames} 降级${d.tiles.degraded}`);
+    check('地形直方图恰好 1 个城池格（原版 raw=3）',
+      d.tiles.histogram[5] === 1, `[${d.tiles.histogram.join(',')}]`);
+    check('20 个原版部队槽位且可见部队 > 0',
+      d.units.built === 20 && d.units.visible > 0,
+      `槽位 ${d.units.built} / 可见 ${d.units.visible}`);
+    check('战斗相机固定斜 45° 正交且禁旋转',
+      d.camera.fixed45 === true && d.camera.projection === 'orthographic'
+      && d.camera.rotationAllowed === false,
+      `${d.camera.azimuthDeg}°/${d.camera.elevationDeg}°`);
+    check('战斗 HUD 已显示', (await evaluate('document.getElementById("p4-battle-hud")?.hidden')) === false);
+
+    // ---- 选中我方部队：移动/攻击范围必须来自原版 qi()/Vo()
+    const unitsInfo = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const a = window.__P4__.deps.adapter;
+      return a.getBattleUnits().filter((u) => u.present && u.state !== 8).map((u) => ({
+        index: u.index, side: u.side, name: u.name, armsTypeName: u.armsTypeName,
+        x: u.x, y: u.y, selectable: a.canSelectUnit(u.index),
+      }));
+    })())`));
+    const ally = unitsInfo.find((u) => u.side === 'mine' && u.selectable) || null;
+    check('存在原版允许操作的我方部队（Xo() 判定）', !!ally,
+      unitsInfo.map((u) => `#${u.index}${u.side === 'mine' ? '(我)' : '(敌)'}${u.selectable ? '*' : ''}`).join(' ') || '无');
+
+    if (ally) {
+      const selInfo = JSON.parse(await evaluate(`JSON.stringify(window.__P4__.selectUnit(${ally.index}))`));
+      check('选中部队：可操作 + 移动/攻击范围来自原版',
+        selInfo.selectable === true && selInfo.moveCount > 0 && selInfo.attackCount > 0,
+        `#${ally.index} ${ally.name} ${ally.armsTypeName} 移动 ${selInfo.moveCount} 格 / 攻击 ${selInfo.attackCount} 格`);
+      const rangeDiag = JSON.parse(await evaluate('JSON.stringify(window.__P4__.scene.getDiagnostics().ranges)'));
+      check('范围覆盖层实例数 = 原版格子数',
+        rangeDiag.moveCells === selInfo.moveCount && rangeDiag.attackCells === selInfo.attackCount,
+        `move ${rangeDiag.moveCells}/${selInfo.moveCount} attack ${rangeDiag.attackCells}/${selInfo.attackCount}`);
+      const hudUnit = await evaluate('document.querySelectorAll("#p4-battle-hud .p4-hud-sec")[1]?.textContent || ""');
+      check('HUD 显示真实部队名/兵种', hudUnit.includes(ally.name) && hudUnit.includes(ally.armsTypeName),
+        hudUnit.slice(0, 60));
+
+      // ---- 进战斗时相机自动取景：所有在场部队都应落在可视区内
+      const inView = JSON.parse(await evaluate(`JSON.stringify((() => {
+        const vp = ${JSON.stringify(stageRect)};
+        const r = document.getElementById('p1-stage').getBoundingClientRect();
+        const list = window.__P4__.deps.adapter.getBattleUnits()
+          .filter((u) => u.present && u.state !== 8);
+        const out = [];
+        for (const u of list) {
+          const s = window.__P4__.cellScreenPosition(u.x, u.y, vp);
+          const inside = !!s && s.x > r.left && s.x < r.right && s.y > r.top && s.y < r.bottom;
+          const el = inside ? document.elementFromPoint(s.x, s.y) : null;
+          out.push({ index: u.index, x: Math.round(s ? s.x : -1), y: Math.round(s ? s.y : -1),
+            inside, tag: el ? el.tagName : null });
+        }
+        return out;
+      })())`));
+      check('战斗相机自动取景：在场部队全部落在可视区且未被 HUD 遮挡',
+        inView.length > 0 && inView.every((u) => u.inside && u.tag === 'CANVAS'),
+        inView.map((u) => `#${u.index}(${u.x},${u.y})${u.inside ? '' : '×'}${u.tag === 'CANVAS' ? '' : '/' + u.tag}`).join(' '));
+
+      await send('Page.enable');
+      const battleShot = await send('Page.captureScreenshot', { format: 'png' });
+      const battleShotPath = path.join(os.tmpdir(), 'sgby-p4-battle.png');
+      fs.writeFileSync(battleShotPath, Buffer.from(battleShot.result.data, 'base64'));
+      check('3D 战斗地图截图已生成（含单位与范围）',
+        fs.statSync(battleShotPath).size > 10000, battleShotPath);
+
+      // ---- 真实鼠标点击部队（Raycaster 命中独立拾取体）
+      const vp = stageRect;
+      const unitScreen = JSON.parse(await evaluate(`JSON.stringify((() => {
+        const s = window.__P4__.cellScreenPosition(${ally.x}, ${ally.y}, ${JSON.stringify(vp)});
+        return s;
+      })())`));
+      const clicksBefore = await evaluate('window.__P4__.scene.interaction.stats.clicks');
+      await clickAt(unitScreen.x, unitScreen.y);
+      await sleep(400);
+      const clicksAfter = await evaluate('window.__P4__.scene.interaction.stats.clicks');
+      const selAfterClick = await evaluate('window.__P4__.scene.selection?.unitId ?? null');
+      check('3D 点击部队识别原版单位 ID',
+        clicksAfter > clicksBefore && selAfterClick === ally.index,
+        `clicks ${clicksBefore}->${clicksAfter} 选中 #${selAfterClick}`);
+
+      // ---- 拖动不误选
+      const selBeforeDrag = selAfterClick;
+      await dragAt(unitScreen.x, unitScreen.y, unitScreen.x + 80, unitScreen.y + 50);
+      await sleep(250);
+      const selAfterDrag = await evaluate('window.__P4__.scene.selection?.unitId ?? null');
+      const dragCount = await evaluate('window.__P4__.scene.interaction.stats.drags');
+      check('战斗地图拖动不误触发单位选择', selAfterDrag === selBeforeDrag && dragCount > 0,
+        `选中 ${selBeforeDrag}->${selAfterDrag}，drag ${dragCount}`);
+
+      // ---- 点击空格：反查逻辑格
+      const emptyCell = JSON.parse(await evaluate(`JSON.stringify((() => {
+        const a = window.__P4__.deps.adapter;
+        const occupied = new Set(a.getBattleUnits().filter((u) => u.present && u.state !== 8).map((u) => u.x + ',' + u.y));
+        for (let y = 0; y < 32; y++) for (let x = 0; x < 32; x++) {
+          if (occupied.has(x + ',' + y)) continue;
+          const s = window.__P4__.cellScreenPosition(x, y, ${JSON.stringify(stageRect)});
+          if (!s || !s.visible) continue;
+          // 必须真正落在 WebGL 画布上：HUD / 工具栏会挡住地图左侧
+          const el = document.elementFromPoint(s.x, s.y);
+          if (!el || el.tagName !== 'CANVAS') continue;
+          return { x, y, sx: s.x, sy: s.y };
+        }
+        return null;
+      })())`));
+      if (emptyCell) {
+        await clickAt(emptyCell.sx, emptyCell.sy);
+        await sleep(300);
+        const cursor = JSON.parse(await evaluate('JSON.stringify(window.__P4__.scene.cursor)'));
+        check('点击空格反查原版格子坐标', cursor && cursor.x === emptyCell.x && cursor.y === emptyCell.y,
+          `目标 (${emptyCell.x},${emptyCell.y}) -> ${JSON.stringify(cursor)}`);
+      } else {
+        check('点击空格反查原版格子坐标', false, '找不到可点空格');
+      }
+    }
+
+    // ---- 相机缩放不改逻辑坐标
+    const camBefore = JSON.parse(await evaluate('JSON.stringify(window.__P4__.scene.getDiagnostics().camera)'));
+    const unitPosBefore = JSON.stringify(await evaluate('JSON.stringify(window.__P4__.deps.adapter.getBattleUnits()[0])'));
+    await send('Input.dispatchMouseEvent', {
+      type: 'mouseWheel', x: stageRect.left + stageRect.width / 2,
+      y: stageRect.top + stageRect.height / 2, deltaX: 0, deltaY: -400,
+    });
+    await sleep(250);
+    const camAfter = JSON.parse(await evaluate('JSON.stringify(window.__P4__.scene.getDiagnostics().camera)'));
+    const unitPosAfter = JSON.stringify(await evaluate('JSON.stringify(window.__P4__.deps.adapter.getBattleUnits()[0])'));
+    check('战斗相机缩放生效且不改变原版单位坐标',
+      camAfter.zoom > camBefore.zoom && unitPosBefore === unitPosAfter,
+      `zoom ${camBefore.zoom.toFixed(2)} -> ${camAfter.zoom.toFixed(2)}`);
+
+    // ---- HUD 遮挡区点击不穿透
+    const hudRect = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const r = document.getElementById('p4-battle-hud').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + 12 };
+    })())`));
+    const clicksHudBefore = await evaluate('window.__P4__.scene.interaction.stats.clicks');
+    await clickAt(hudRect.x, hudRect.y);
+    await sleep(200);
+    const clicksHudAfter = await evaluate('window.__P4__.scene.interaction.stats.clicks');
+    check('战斗 HUD 遮挡区点击不穿透 3D', clicksHudAfter === clicksHudBefore,
+      `clicks ${clicksHudBefore} -> ${clicksHudAfter}`);
+
+    await send('Page.enable');
+    const battleShot2 = await send('Page.captureScreenshot', { format: 'png' });
+    const battleShotPath2 = path.join(os.tmpdir(), 'sgby-p4-battle-zoomed.png');
+    fs.writeFileSync(battleShotPath2, Buffer.from(battleShot2.result.data, 'base64'));
+    check('缩放/拖动后的战斗截图已生成', fs.statSync(battleShotPath2).size > 10000, battleShotPath2);
+
+    // ---- 退出路径接线：只演练表现层（原版协程仍在战斗中，本阶段不驱动战斗）
+    await evaluate("window.__SGBY_CORE__.p4.notify('exit')");
+    await sleep(600);
+    const afterExit = await p4Status();
+    check('战斗结束通知 -> 返回战略地图并收起 HUD（表现层接线）',
+      afterExit.active === false && afterExit.hudOpen === false
+      && afterExit.sceneId === 'world',
+      `active=${afterExit.active} scene=${afterExit.sceneId} hud=${afterExit.hudOpen}`);
   }
 
   const diag = await evaluate(`JSON.stringify({

@@ -99,7 +99,7 @@ test('getOfficers/getOfficer 来自真实武将队列与武将数据', async () 
   adapter.dispose();
 });
 
-test('getBattleState/Units/Ranges 只透传真实 Dn 字段，不解释规则', async () => {
+test('战斗只读接口：无 p4 内核时如实拒绝，不伪造范围', async () => {
   const { adapter } = setup();
   await adapter.connect({ requireInput: false, installHooks: false, watchdog: false });
   const b = adapter.getBattleState();
@@ -108,14 +108,23 @@ test('getBattleState/Units/Ranges 只透传真实 Dn 字段，不解释规则', 
   assert.equal(b.mapId, 110);
   assert.equal(b.viewport.cols, 15);
   assert.equal(b.viewport.rows, 17);
-  assert.equal(adapter.getBattleUnits().length, 20);
-  const mr = adapter.getMovementRange(0);
-  assert.equal(mr.windowSize, 15);
-  assert.equal(mr.raw.length, 225);
-  assert.equal(mr.freshness, 'unknown');
-  const ar = adapter.getAttackRange(0);
-  assert.equal(ar.freshness, 'unknown');
-  assert.throws(() => adapter.getMovementRange(99), RangeError);
+  assert.equal(b.mapReady, false, '未进战斗时地图未初始化');
+
+  const units = adapter.getBattleUnits();
+  assert.equal(units.length, 20);
+  assert.equal(units.filter((u) => u.present).length, 0, '未开局时 GenArray 为空');
+  assert.equal(units[0].side, 'mine');
+  assert.equal(units[10].side, 'enemy');
+
+  // Node 夹具没有 p4 内核导出：必须抛 UnsupportedError（绝不返回一份假范围）
+  assert.throws(() => adapter.getMovementRange(0),
+    (e) => e instanceof UnsupportedError && /p4\.battle/.test(e.reason));
+  assert.throws(() => adapter.getAttackRange(0),
+    (e) => e instanceof UnsupportedError && /p4\.battle/.test(e.reason));
+  assert.throws(() => adapter.getBattleMap(),
+    (e) => e instanceof UnsupportedError && /p4\.battle/.test(e.reason));
+  assert.equal(adapter.canSelectUnit(0), false, '无 p4 时不可选，不假装可选');
+  assert.throws(() => adapter.getBattleUnit(99), RangeError);
   adapter.dispose();
 });
 

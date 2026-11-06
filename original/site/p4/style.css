@@ -1,0 +1,133 @@
+/* P4 战斗 HUD —— 与 P2/P3 同一套暗色木质 + 金色描边，只做信息展示 */
+
+.p4-hud {
+  position: absolute;
+  left: 16px;
+  top: 66px;
+  width: 322px;
+  max-height: calc(100vh - 130px);
+  display: flex;
+  flex-direction: column;
+  z-index: 12;
+  background: linear-gradient(180deg, rgba(28, 24, 18, .95), rgba(14, 12, 9, .97));
+  border: 1px solid rgba(200, 160, 90, .55);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .55), inset 0 1px 0 rgba(255, 226, 168, .12);
+  color: #eadcc0;
+  font-size: 12.5px;
+  overflow: hidden;
+}
+
+.p4-hud[hidden] { display: none; }
+
+.p4-hud-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(200, 160, 90, .28);
+  background: linear-gradient(180deg, rgba(70, 54, 32, .9), rgba(40, 31, 20, .9));
+}
+
+.p4-hud-title { font-weight: 700; letter-spacing: .06em; color: #f0d79a; }
+
+.p4-hud-chip {
+  flex: 1;
+  font-size: 11px;
+  color: #cbb994;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.p4-hud-btn {
+  padding: 3px 9px;
+  background: linear-gradient(180deg, #5b452c, #3a2c1c);
+  border: 1px solid rgba(200, 160, 90, .5);
+  border-radius: 4px;
+  color: #eadcc0;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.p4-hud-btn:hover { border-color: #e0b04a; color: #fff3d6; }
+
+.p4-hud-body {
+  padding: 6px 10px 8px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.p4-hud-sec { margin-top: 8px; }
+.p4-hud-sec:first-child { margin-top: 2px; }
+
+.p4-hud-sec h3 {
+  margin: 0 0 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  color: #d9b96a;
+  border-left: 3px solid rgba(217, 185, 106, .7);
+  padding-left: 6px;
+}
+
+.p4-kv {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 2px 8px;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.p4-kv dt { color: #9c8e73; }
+.p4-kv dd { margin: 0; color: #efe3c9; word-break: break-all; }
+
+.p4-hud-note {
+  margin: 5px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #a99a80;
+}
+
+.p4-hud-foot {
+  padding: 6px 10px;
+  border-top: 1px solid rgba(200, 160, 90, .22);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: #93866f;
+  background: rgba(0, 0, 0, .28);
+}
+
+.p4-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  padding-top: 2px;
+}
+
+.p4-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #c9bb9d;
+}
+
+.p4-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, .5);
+  display: inline-block;
+}
+
+.p4-swatch-move { background: rgba(74, 163, 255, .75); }
+.p4-swatch-attack { background: rgba(255, 106, 90, .78); }
+.p4-swatch-mine { background: #4f7fd0; }
+.p4-swatch-enemy { background: #c0504d; }
+.p4-swatch-state { background: #d0a020; }
+
+@media (max-width: 900px) {
+  .p4-hud { width: 258px; left: 10px; top: 58px; font-size: 12px; }
+}

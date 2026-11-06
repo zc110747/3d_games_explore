@@ -112,5 +112,15 @@ export class CoordinateSystem {
     return this.battle;
   }
 
+  /**
+   * P4：按原版地图头部真实宽高调整战斗格尺寸（7 张地图实测都是 32x32，
+   * 但这里不写死，避免原版换图后坐标悄悄错位）。
+   */
+  setBattleGridSize(cols, rows) {
+    if (!(cols > 0 && rows > 0)) throw new RangeError('战斗地图宽高必须为正数');
+    this.battle = { ...this.battle, cols, rows };
+    return this.battle;
+  }
+
   getConfig() { return { world: { ...this.world }, battle: { ...this.battle } }; }
 }

@@ -68,6 +68,7 @@ export class GameAdapter {
     this._watchdog = null;
     this._cache = new Map();
     this._waiterKind = 'unknown';   // P2：最近一次 waitMsg 的调用协程（只读诊断）
+    this._mapCache = { key: null, value: null };   // P4：战斗地图投影缓存（一场战斗内不变）
     this.stats = { syncCount: 0, inputHooks: 0, contextHooks: 0, lastSource: null,
       selectionRequests: 0, injectedMessages: 0 };
     this.capabilities = this._buildCapabilities();
@@ -215,6 +216,12 @@ export class GameAdapter {
     const k = `${id}:${idx}`;
     if (!this._cache.has(k)) this._cache.set(k, lib.getItem(id, idx));
     return this._cache.get(k);
+  }
+
+  /** P4：内核导出的原版战斗函数（旧内核没有 p4 时返回 null，由调用方如实报错）。 */
+  _battleFns() {
+    const p4 = this.core.p4;
+    return p4 && p4.battle ? p4.battle : null;
   }
 
   getCities() { return freeze(this.core.Dn.g_Cities.map((_, i) => this.getCity(i))); }
@@ -399,12 +406,16 @@ export class GameAdapter {
   // ========================================================== 只读：战斗
   getBattleState() {
     const Dn = this.core.Dn, f = Dn.g_FgtParam || {};
+    const b = this._battleFns();
     return freeze({
       over: Dn.g_FgtOver,
       round: Dn.g_FgtBoutCnt,
       weather: Dn.g_FgtWeather,
       mapId: f.MapId, mode: f.Mode, way: f.Way,
       width: Dn.g_MapWid, height: Dn.g_MapHgt,
+      // 地图与部队位置只有在原版 yo()（L5744）跑完后才有效，这里如实暴露就绪状态
+      mapReady: !!(b && Dn.g_MapWid > 0 && Dn.g_MapHgt > 0 && Dn.g_GenPos && Dn.g_GenPos.length >= 20),
+      tilePicId: b ? b.tilePicId : null,
       provender: freeze({ mine: f.MProvender, enemy: f.EProvender }),
       viewport: freeze({ sx: Dn.g_MapSX, sy: Dn.g_MapSY, cols: 15, rows: 17 }),
       focus: freeze({ x: Dn.g_FoucsX, y: Dn.g_FoucsY }),
@@ -418,53 +429,255 @@ export class GameAdapter {
   getBattleUnits() {
     const Dn = this.core.Dn;
     const gen = Dn.g_FgtParam && Dn.g_FgtParam.GenArray;
-    return freeze((Dn.g_GenPos || []).map((u, i) => freeze({
-      index: i,
-      side: i < 10 ? 'mine' : 'enemy',
-      x: u.x, y: u.y, hp: u.hp, mp: u.mp,
-      move: u.move, active: u.active, state: u.state,
-      officerId: gen ? gen[i] - 1 : null,   // GenArray 值 = 武将编号+1
-      source: 'Dn.g_GenPos + g_FgtParam.GenArray',
-    })));
+    return freeze((Dn.g_GenPos || []).map((u, i) => this._projectUnit(i, u, gen)));
+  }
+
+  getBattleUnit(unitId) {
+    const Dn = this.core.Dn;
+    const u = Dn.g_GenPos && Dn.g_GenPos[unitId];
+    if (!u) throw new RangeError(`部队 ID 越界: ${unitId}`);
+    return this._projectUnit(unitId, u, Dn.g_FgtParam && Dn.g_FgtParam.GenArray);
   }
 
   /**
-   * 原版 qi() 计算的 15×15 局部窗口位图（Dn.g_FightPath 前 225 字节）。
-   * P1 只透传原始位图，不解释「剩余移动力」语义、不重算规则。
+   * P4：单支部队的只读投影。
+   * 名称走原版 $n()，兵种/状态/势力文字走原版界面字符串表（getStr(1,12/28+)），
+   * 不做任何推断；`present=false` 表示该槽位在原版 GenArray 里是空的。
    */
-  getMovementRange(unitId) {
-    const Dn = this.core.Dn;
-    if (!Number.isInteger(unitId) || unitId < 0 || unitId >= (Dn.g_GenPos || []).length) {
-      throw new RangeError(`部队 ID 越界: ${unitId}`);
+  _projectUnit(index, u, gen) {
+    const Dn = this.core.Dn, lib = this.core.lib;
+    const genValue = gen ? gen[index] : 0;
+    const officerId = genValue ? genValue - 1 : null;
+    const present = genValue > 0;
+    let person = null;
+    if (present && Dn.g_Persons && Dn.g_Persons[officerId]) person = Dn.g_Persons[officerId];
+    const armsType = person ? person.ArmsType : null;
+    const belong = person ? person.Belong : 0;
+    let name = '';
+    if (present) {
+      const fns = this.core.fns || {};
+      name = typeof fns.$n === 'function' ? fns.$n(officerId) : lib.getStr(62, officerId + 1);
     }
-    const path = Dn.g_FightPath;
     return freeze({
-      unitId,
-      windowSize: 15,
-      origin: freeze({ x: Dn.g_PathSX - Dn.g_PUseSX, y: Dn.g_PathSY - Dn.g_PUseSY }),
-      raw: path ? Uint8Array.from(path.subarray(0, 225)) : new Uint8Array(0),
-      freshness: 'unknown',
-      note: '原版 qi() 的瞬时缓存；仅当原版流程正在计算该部队移动范围时有效。P1 不解释规则。',
-      source: 'Dn.g_FightPath / g_PathSX / g_PathSY / g_PUseSX / g_PUseSY',
+      index,
+      side: index < 10 ? 'mine' : 'enemy',
+      present,
+      x: u.x, y: u.y, hp: u.hp, mp: u.mp,
+      move: u.move, active: u.active, state: u.state,
+      officerId,
+      name,
+      belong,
+      armsType,
+      armsTypeName: armsType === null ? '' : String(lib.getStr(1, 12) || '').substr(armsType * 2, 2),
+      arms: person ? person.Arms : null,
+      level: person ? person.Level : null,
+      stateName: String(lib.getStr(1, 28 + u.state) || ''),   // 原版 vi(28+state)，Oo() L6282
+      source: 'Dn.g_GenPos + g_FgtParam.GenArray + $n() + getStr(1,12/28+)',
     });
   }
 
-  /** 原版 Vo() 计算的攻击范围位图（5×5 普通 / 9×9 技能）。同样只透传。 */
-  getAttackRange(unitId) {
-    const Dn = this.core.Dn;
-    if (!Number.isInteger(unitId) || unitId < 0 || unitId >= (Dn.g_GenPos || []).length) {
-      throw new RangeError(`部队 ID 越界: ${unitId}`);
+  /**
+   * P4：某支部队此刻是否**允许被玩家操作**。
+   *
+   * 判定完全复用原版 Xo()（L6433）：它只扫我方 0..9，按
+   *   state!==8（在场）、active===0（未行动）、state!==1/6（混乱/石阵）
+   * 返回焦点格上的部队下标。这里临时把 g_FoucsX/Y 指向该部队、同步调用后立刻还原，
+   * 因此不复制任何规则，也不留下任何状态改动（焦点是纯显示用的临时量）。
+   */
+  canSelectUnit(unitId) {
+    const Dn = this.core.Dn, b = this._battleFns();
+    const u = Dn.g_GenPos && Dn.g_GenPos[unitId];
+    if (!u) throw new RangeError(`部队 ID 越界: ${unitId}`);
+    if (!b || typeof b.Xo !== 'function') return false;
+    const fx = Dn.g_FoucsX, fy = Dn.g_FoucsY;
+    try {
+      Dn.g_FoucsX = u.x;
+      Dn.g_FoucsY = u.y;
+      return b.Xo() === unitId;
+    } finally {
+      Dn.g_FoucsX = fx;
+      Dn.g_FoucsY = fy;
     }
-    const r = Dn.g_FgtAtkRng, size = r ? r[0] : 0;
+  }
+
+  /**
+   * P4：原版战斗地图（Ci() = lib.getItem(g_FgtParam.MapId, 1)）。
+   *   头部 16 字节：byte0=宽、byte2=高（yo() L5755 就是按这两个值取 g_MapWid/Hgt）
+   *   之后是 width*height 个图块号，直接对应 lib.loadPic(4,1) 的 46 帧
+   *   地形类别由原版 Ui() 给出（0..7：草地/平原/山地/森林/村庄/城池/营寨/河流）
+   */
+  getBattleMap() {
+    const Dn = this.core.Dn, f = Dn.g_FgtParam || {};
+    const b = this._battleFns();
+    if (!b) {
+      throw new UnsupportedError('getBattleMap',
+        '内核未导出 p4.battle（sgby.core.js 版本过旧，请重新执行 node tools/make_core.mjs）', 'Ci() L5374');
+    }
+    if (!Dn.g_MapWid || !Dn.g_MapHgt) {
+      return freeze({ available: false, mapId: f.MapId,
+        reason: '战斗尚未初始化（原版 yo() 未执行完）', source: 'Dn.g_MapWid/g_MapHgt' });
+    }
+    const data = b.Ci();
+    if (!data) return freeze({ available: false, mapId: f.MapId, reason: '资源包缺少该战斗地图', source: 'Ci()' });
+    const w = Dn.g_MapWid, h = Dn.g_MapHgt;
+    // 同一场战斗内地图数据不会变：按 mapId 缓存 1024 格投影，避免 HUD 每次刷新重算
+    const cacheKey = `${f.MapId}:${w}x${h}:${data.length}`;
+    if (this._mapCache.key === cacheKey) return this._mapCache.value;
+    const raw = new Uint8Array(w * h);
+    const terrain = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const k = y * w + x;
+        raw[k] = data[16 + k];
+        terrain[k] = b.Ui(x, y);        // 原版地形归类，本层不推导
+      }
+    }
     return freeze({
-      unitId,
-      size,
-      origin: freeze({ x: r ? r[1] : 0, y: r ? r[2] : 0 }),
-      bitmap: r && size ? Uint8Array.from(r.subarray(3, 3 + size * size)) : new Uint8Array(0),
-      freshness: 'unknown',
-      note: '原版 Vo() 的瞬时缓存；仅当原版流程正在计算攻击范围时有效。P1 不解释规则。',
-      source: 'Dn.g_FgtAtkRng[0..2] + 位图',
+      available: true,
+      mapId: f.MapId,
+      width: w,
+      height: h,
+      cellCount: w * h,
+      tilePicId: b.tilePicId,           // 4 = 战斗地图图块（46 帧）
+      raw,                              // 图块号（0..45），直接对应图集帧
+      terrain,                          // 原版 Ui() 地形类别 0..7
+      terrainNames: freeze(this.getBattleTerrainNames()),
+      source: 'Ci() = lib.getItem(MapId,1)；宽高 = 头部[0]/[2]；地形 = Ui()',
     });
+  }
+
+  /** 战斗地图投影缓存清理（换一场战斗时由适配层自己失效，无需外部调用）。 */
+  invalidateBattleMap() { this._mapCache = { key: null, value: null }; }
+
+  /** P4：8 种地形短名，来自原版界面字符串 [7]（每 2 字一项）。 */
+  getBattleTerrainNames() {
+    const s = String(this.core.lib.getStr(1, 7) || '');
+    const out = [];
+    for (let i = 0; i + 1 < s.length; i += 2) out.push(s.slice(i, i + 2));
+    return out;
+  }
+
+  /** P4：单格只读投影（调试面板与 HUD 用）。 */
+  getBattleCell(x, y) {
+    const map = this.getBattleMap();
+    if (!map.available) return freeze({ available: false, reason: map.reason });
+    if (!(x >= 0 && x < map.width && y >= 0 && y < map.height)) {
+      throw new RangeError(`格子越界: (${x},${y})，地图 ${map.width}x${map.height}`);
+    }
+    const k = y * map.width + x;
+    const cls = map.terrain[k];
+    return freeze({
+      x, y,
+      tile: map.raw[k],
+      terrain: cls,
+      terrainName: map.terrainNames[cls] || '',
+      description: String(this.core.lib.getStr(1, 14 + cls) || ''),   // 原版 Oo() L6285
+      source: 'Ui() + getStr(1,7/14+)',
+    });
+  }
+
+  /**
+   * P4：移动范围 —— **调用原版 qi()**（L5524）算出 15x15 局部窗口位图，
+   * 再按原版自己的偏移（g_PathSX-g_PUseSX）还原成全图格坐标。
+   *
+   * 取值语义与原版 ea()（L6659「画移动范围」）完全一致：0 < v < Me(128) 即可到达，
+   * 起始格由 qi() 末尾置 0，因此不会把自己算进目标格。
+   *
+   * qi() 会写 g_FightPath 与 4 个 g_Path* 坐标 —— 它们都是原版每帧重算的临时量。
+   * 为了让 2D 原版流程完全不受影响，调用前后做快照/还原（同步执行，无并发）。
+   */
+  getMovementRange(unitId) {
+    const Dn = this.core.Dn, b = this._battleFns();
+    const u = Dn.g_GenPos && Dn.g_GenPos[unitId];
+    if (!u) throw new RangeError(`部队 ID 越界: ${unitId}`);
+    if (!b || typeof b.qi !== 'function') {
+      throw new UnsupportedError('getMovementRange', '内核未导出 p4.battle.qi', 'qi() L5524');
+    }
+    if (!Dn.g_MapWid) {
+      return freeze({ available: false, unitId, reason: '战斗尚未初始化（原版 yo() 未执行完）', source: 'Dn.g_MapWid' });
+    }
+    if (!u.move) {
+      return freeze({ available: false, unitId, reason: '该部队移动力为 0（原版本回合不可移动）', source: 'Dn.g_GenPos[].move' });
+    }
+    const path = Dn.g_FightPath;
+    const snap = {
+      path: Uint8Array.from(path),
+      sx: Dn.g_PathSX, sy: Dn.g_PathSY, usx: Dn.g_PUseSX, usy: Dn.g_PUseSY,
+      bakX: Dn.g_BakUpX, bakY: Dn.g_BakUpY,
+    };
+    try {
+      b.qi(unitId);
+      const origin = { x: (Dn.g_PathSX - Dn.g_PUseSX) & 0xff, y: (Dn.g_PathSY - Dn.g_PUseSY) & 0xff };
+      const width = b.grid.pathWidth;      // 15
+      const limit = b.grid.blockCost;      // 128
+      const cells = [];
+      for (let row = 0; row < width; row++) {
+        for (let col = 0; col < width; col++) {
+          const v = path[row * width + col];
+          if (v > 0 && v < limit) cells.push(freeze({ x: origin.x + col, y: origin.y + row, remaining: v }));
+        }
+      }
+      return freeze({
+        available: true,
+        unitId,
+        self: freeze({ x: u.x, y: u.y }),
+        origin: freeze(origin),
+        windowSize: width,
+        cells: freeze(cells),
+        cellCount: cells.length,
+        raw: Uint8Array.from(path.subarray(0, b.grid.pathBytes)),
+        source: '原版 qi()（移动力/地形消耗/占位全由它算），本层只做坐标还原',
+      });
+    } finally {
+      path.set(snap.path);
+      Dn.g_PathSX = snap.sx; Dn.g_PathSY = snap.sy;
+      Dn.g_PUseSX = snap.usx; Dn.g_PUseSY = snap.usy;
+      Dn.g_BakUpX = snap.bakX; Dn.g_BakUpY = snap.bakY;
+    }
+  }
+
+  /**
+   * P4：攻击范围 —— 调用原版 Vo(0,0,unitId)（L6628，普通攻击 5x5 掩码，
+   * 掩码来自资源 2 项 2 的「兵种攻击范围」）。技能范围是 Vo(1,skill,unitId) 的 9x9，
+   * P5 才接入技能选择，本阶段只做普通攻击范围。
+   *
+   * 同样快照/还原 g_FgtAtkRng：原版 zo()（L6600）在敌方自动反击时**直接复用**
+   * 这份位图，若被表现层污染会改变战斗结果，因此必须还原。
+   */
+  getAttackRange(unitId) {
+    const Dn = this.core.Dn, b = this._battleFns();
+    if (!Dn.g_GenPos || !Dn.g_GenPos[unitId]) throw new RangeError(`部队 ID 越界: ${unitId}`);
+    if (!b || typeof b.Vo !== 'function') {
+      throw new UnsupportedError('getAttackRange', '内核未导出 p4.battle.Vo', 'Vo() L6628');
+    }
+    if (!Dn.g_MapWid) {
+      return freeze({ available: false, unitId, reason: '战斗未开始', source: 'Dn.g_MapWid' });
+    }
+    const rng = Dn.g_FgtAtkRng;
+    const snap = Uint8Array.from(rng);
+    try {
+      b.Vo(0, 0, unitId);
+      const size = rng[0];
+      const origin = { x: rng[1], y: rng[2] };
+      const cells = [];
+      for (let i = 0; i < size * size; i++) {
+        if (rng[3 + i] !== 1) continue;                 // 与原版 Ho() L6620 同一判定
+        cells.push(freeze({ x: origin.x + (i % size), y: origin.y + Math.floor(i / size) }));
+      }
+      return freeze({
+        available: true,
+        unitId,
+        kind: 'normal',
+        size,
+        origin: freeze(origin),
+        cells: freeze(cells),
+        cellCount: cells.length,
+        bitmap: Uint8Array.from(rng.subarray(3, 3 + size * size)),
+        source: '原版 Vo(0,0,unitId)；掩码来自 getItem(2,2) 兵种攻击范围',
+      });
+    } finally {
+      rng.set(snap);
+    }
   }
 
   // ========================================================== 操作通道
@@ -617,9 +830,14 @@ export class GameAdapter {
       getOfficers: read('g_PersonsQueue + Dn.g_Persons'),
       getOfficer: read('Dn.g_Persons + $n()'),
       getBattleState: read('Dn.g_FgtParam 等'),
-      getBattleUnits: read('Dn.g_GenPos + GenArray'),
-      getMovementRange: read('Dn.g_FightPath（瞬时缓存，只透传）'),
-      getAttackRange: read('Dn.g_FgtAtkRng（瞬时缓存，只透传）'),
+      getBattleUnits: read('Dn.g_GenPos + GenArray + $n() + getStr(1,12/28+)'),
+      getBattleUnit: read('Dn.g_GenPos[unitId]（P4）'),
+      getBattleMap: read('Ci() = lib.getItem(MapId,1) + Ui() 地形归类（P4）'),
+      getBattleCell: read('地图 + getStr(1,7/14+)（P4）'),
+      getBattleTerrainNames: read('getStr(1,7) 每 2 字一项（P4）'),
+      canSelectUnit: read('原版 Xo()，临时借用 g_FoucsX/Y 后立刻还原（P4）'),
+      getMovementRange: read('调用原版 qi()，快照/还原 g_FightPath 后还原格坐标（P4）'),
+      getAttackRange: read('调用原版 Vo(0,0,id)，快照/还原 g_FgtAtkRng（P4）'),
       sendInput: freeze({ status: 'write', source: 'class A.pushMsg（原版规定入口）' }),
       requestCitySelection: freeze({ status: 'write', source: 'P2：方向键/确认键经 pushMsg 驱动 zs()，需 getInputPhase().canSelectCity' }),
       selectCity: un('原版是输入循环，方向相反', 'zs() L4247'),

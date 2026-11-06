@@ -15,7 +15,6 @@ import { SceneManager } from './core/SceneManager.mjs';
 import { InputManager } from './core/InputManager.mjs';
 import { WorldMapScene } from './scenes/WorldMapScene.mjs';
 import { CityScene } from './scenes/CityScene.mjs';
-import { BattleScene } from './scenes/BattleScene.mjs';
 import { THREE_VERSION, SCENE_IDS, INPUT_CONFIG } from './core/config.mjs';
 import { P2_VERSION } from '../p2/config.mjs';
 import { MapCoordinateSystem } from '../p2/MapCoordinateSystem.mjs';
@@ -24,6 +23,8 @@ import { StrategicMapScene } from '../p2/StrategicMapScene.mjs';
 import { MapInteraction } from '../p2/MapInteraction.mjs';
 import { DebugPanel } from '../p2/DebugPanel.mjs';
 import { createCityManager } from '../p3/boot.mjs';
+import { createBattleManager } from '../p4/boot.mjs';
+import { P4_VERSION } from '../p4/config.mjs';
 
 const $ = (id) => document.getElementById(id);
 const logEl = $('p1-log');
@@ -76,10 +77,13 @@ async function boot() {
   const modal = $('p1-modal-overlay');
   const p2Panel = $('p2-panel');
   const p3Chip = $('p3-chip');
+  const p4Chip = $('p4-chip');
   let mapScene = null;
   let interaction = null;
   let debugPanel = null;
   let cityManager = null;
+  let battleManager = null;
+  let scenesReady = false;   // 防止 RenderManager 构造期 resize 访问尚未初始化的 scenes
 
   const events = new EventManager();
   const coordinate = new CoordinateSystem();
@@ -92,6 +96,10 @@ async function boot() {
     onResize: (aspect) => {
       cameraManager.onResize(aspect);
       worldCamera.fitAll(aspect);   // P2：保证 12x9 地图完整显示
+      // P4：战斗相机按真实地图尺寸重新取景（CameraManager 刚把 frustum 复位成配置值）
+      if (scenesReady && scenes.currentId === SCENE_IDS.BATTLE && scenes.current?.onResize) {
+        scenes.current.onResize(aspect);
+      }
     },
   });
   const input = new InputManager({ container: stage });
@@ -99,6 +107,7 @@ async function boot() {
   if (!core) throw new Error('未检测到 window.__SGBY_CORE__；请确认 index3d.html 加载的是 sgby.core.js');
   const adapter = new GameAdapter({ core, events });
   const scenes = new SceneManager({ events, adapter });
+  scenesReady = true;
 
   const deps = {
     THREE, assets, events, coordinate, cameraManager, adapter, uiContainer: uiRoot,
@@ -106,7 +115,8 @@ async function boot() {
   };
   scenes.register(SCENE_IDS.WORLD, () => new StrategicMapScene(deps));
   scenes.register(SCENE_IDS.CITY, () => new CityScene(deps));
-  scenes.register(SCENE_IDS.BATTLE, () => new BattleScene(deps));
+  // P4：battle 场景由 createBattleManager 注册（BattleMapScene），
+  // P1 的占位 BattleScene 不再注册，避免两套战斗场景并存。
 
   // ---------------------------------------------------------- 输入 -> P2 交互
   // P1 的占位拾取/平移绑定已移除；统一由 MapInteraction（复用同一 InputManager）
@@ -161,6 +171,24 @@ async function boot() {
         ? (() => { const s = cityManager.getStatus().stats;
           return `${s.lists} / ${s.persons} / ${s.messages}`; })()
         : '—'],
+      ['P4 战斗状态', battleManager
+        ? (() => {
+          const s = battleManager.getStatus();
+          return s.active ? `${s.phase}${s.loaded ? '（3D 已装载）' : ''}` : '未进入（原版未调用 Uo()）';
+        })()
+        : '—'],
+      ['P4 地图 / 部队', (() => {
+        const d = battleManager && battleManager.scene && battleManager.scene.getDiagnostics
+          ? battleManager.scene.getDiagnostics() : null;
+        if (!d || !d.loaded) return '—';
+        return `${d.map.width}×${d.map.height} / ${d.units.visible} 支`;
+      })()],
+      ['P4 选中 / 范围', (() => {
+        const d = battleManager && battleManager.scene && battleManager.scene.getDiagnostics
+          ? battleManager.scene.getDiagnostics() : null;
+        if (!d || !d.selection) return '—';
+        return `#${d.selection.unitId}（${d.selection.selectable ? '可操作' : '不可操作'}）移动 ${d.selection.moveCount} / 攻击 ${d.selection.attackCount}`;
+      })()],
     ];
     if (statusList) {
       statusList.replaceChildren();
@@ -179,6 +207,14 @@ async function boot() {
         : !st.cityLoop ? '城市 UI 待命（点击己方城）'
           : st.open ? `城市管理 · ${st.cityId}` : '原版城市阶段 · 等待选城';
       p3Chip.style.color = st && st.cityLoop ? '#e0c07a' : '';
+    }
+    if (p4Chip) {
+      const st = battleManager ? battleManager.getStatus() : null;
+      const diag = st && st.diagnostics;
+      p4Chip.textContent = !st ? '战斗未装配'
+        : !st.active ? '战斗待命'
+          : st.loaded && diag && diag.map ? `战斗中 · ${diag.map.width}×${diag.map.height}` : '战斗初始化中';
+      p4Chip.style.color = st && st.active ? '#e08a7a' : '';
     }
     if (debugPanel && mapScene && coreReady) {
       try { refreshDebug(); } catch (e) { /* 状态切换瞬间忽略 */ }
@@ -513,6 +549,78 @@ async function boot() {
     });
     suites.push(p3.summary());
 
+    // ---------------------------------------------------------- P4 战斗地图自检
+    const p4 = makeSuite('P4 战斗地图');
+    const p4core = core.p4 || null;
+    p4.check('内核导出 yo/Uo 接管点与战斗函数', () => {
+      if (!p4core) throw new Error('core.p4 缺失（sgby.core.js 未重新生成？）');
+      const names = p4core.widgetNames;
+      if (!names || names.length !== 2 || !names.includes('yo') || !names.includes('Uo')) {
+        throw new Error(`接管点 ${names}`);
+      }
+      for (const k of ['qi', 'Vo', 'Ui', 'Ci', 'Xo']) {
+        if (typeof p4core.battle[k] !== 'function') throw new Error(`缺少 ${k}()`);
+      }
+      return names.join('/');
+    });
+    p4.check('战斗网格协议与源码常量一致', () => {
+      const g = p4core.battle.grid;
+      return g.unitsPerSide === 10 && g.unitsTotal === 20 && g.windowCols === 15
+        && g.windowRows === 17 && g.pathWidth === 15 && g.blockCost === 128;
+    });
+    p4.check('适配层战斗接口如实标注', () => {
+      const c = adapter.getCapabilities();
+      if (c.getBattleMap.status !== 'read') throw new Error('getBattleMap 应为 read');
+      if (c.moveUnit.status !== 'unavailable') throw new Error('moveUnit 不应可用');
+      if (c.getMovementRange.status !== 'read') throw new Error('getMovementRange 应为 read');
+      return 'getBattleMap/getMovementRange=read · moveUnit=unavailable';
+    });
+    p4.check('不伪造战斗地图', () => {
+      const m = adapter.getBattleMap();
+      if (!m.available) {
+        if (battleManager && battleManager.hud.isOpen) throw new Error('未进战斗却显示了战斗 HUD');
+        return `未进入战斗：${m.reason}`;
+      }
+      if (m.cellCount !== m.width * m.height) throw new Error(`格子数 ${m.cellCount} ≠ ${m.width}x${m.height}`);
+      if (m.raw.length !== m.cellCount || m.terrain.length !== m.cellCount) throw new Error('raw/terrain 长度不符');
+      return `原版仍保留地图 ${m.width}x${m.height}（Dn.g_MapWid 结束时不清零）`;
+    });
+    p4.check('战斗场景可切换（世界 -> 战斗）', () => {
+      const r = scenes.canSwitch('battle');
+      if (!r.ok) throw new Error(r.reason);
+      return 'world -> battle 合法';
+    });
+    p4.check('战斗坐标 32x32 往返', () => {
+      const bc = battleManager.deps.battleCoord;
+      bc.configure(32, 32);
+      for (const [x, y] of [[0, 0], [31, 31], [15, 8], [7, 23]]) {
+        const w = bc.gridToWorld(x, y);
+        const g = bc.worldToGrid(w.x, w.z);
+        if (g.col !== x || g.row !== y || g.error > 1e-9) throw new Error(`(${x},${y}) -> ${JSON.stringify(g)}`);
+      }
+      return '4/4';
+    });
+    p4.check('进入战斗后：地图/单位/相机', () => {
+      const st = battleManager ? battleManager.getStatus() : null;
+      if (!st || !st.active || !st.loaded) {
+        // 阶段感知：未进战斗时不做数据断言，也绝不造一份假战况
+        return '未进入战斗（阶段感知，跳过数据断言）';
+      }
+      const d = st.diagnostics;
+      if (d.map.width !== 32 || d.map.height !== 32) throw new Error(`地图 ${d.map.width}x${d.map.height}`);
+      if (d.tiles.cells !== 1024) throw new Error(`格子 ${d.tiles.cells}`);
+      if (d.tiles.degraded) throw new Error('图集处于降级状态');
+      if (d.tiles.histogram[5] < 1) throw new Error('地形直方图缺少城池格');
+      if (d.units.built !== 20) throw new Error(`部队槽位 ${d.units.built}`);
+      if (d.units.visible < 1) throw new Error('没有可见部队');
+      if (!d.camera || d.camera.fixed45 !== true || d.camera.rotationAllowed !== false) {
+        throw new Error(JSON.stringify(d.camera));
+      }
+      return `${d.map.width}x${d.map.height} / ${d.tiles.frames} 帧 / 部队 ${d.units.visible}`
+        + ` / 地形[${d.tiles.histogram.join(',')}]`;
+    });
+    suites.push(p4.summary());
+
     const pass = suites.reduce((n, s) => n + s.pass, 0);
     const fail = suites.reduce((n, s) => n + s.fail, 0);
     if (verbose) {
@@ -625,6 +733,12 @@ async function boot() {
     log: (msg) => log(`[P3] ${msg}`),
   });
   log(`P3 城市管理已装配：接管 ${cityManager.getStatus().widgets.join(' / ')}`);
+  battleManager = createBattleManager({
+    THREE, adapter, events, scenes, cameraManager, coordinate, renderManager, input, assets,
+    uiHost: uiRoot,
+    log: (msg) => log(`[P4] ${msg}`),
+  });
+  log(`P4 战斗场景已装配：接管 ${core.p4 ? core.p4.widgetNames.join(' / ') : '（内核无 p4，战斗将不可用）'}`);
   log('提示：点「原版画面」在主菜单开新局，进入剧本后点击己方城市即可打开城市管理');
   renderManager.resize();           // 触发 worldCamera.fit，保证整图可见
   renderStatus();
@@ -699,6 +813,53 @@ async function boot() {
       };
     },
     getActionGroups: () => cityManager.cityUI.getActionGroups(),
+    runSmoke,
+    switchScene,
+  });
+  /** P4 战斗调试/自动化入口（只读诊断 + 明确标注的表现层选中，不写游戏状态）。 */
+  window.__P4__ = Object.freeze({
+    version: P4_VERSION,
+    manager: battleManager,
+    hud: battleManager.hud,
+    host: battleManager.host,
+    deps: battleManager.deps,
+    get scene() { return battleManager.scene; },
+    getStatus: () => battleManager.getStatus(),
+    getSnapshot: () => {
+      const s = battleManager.scene;
+      const m = adapter.getBattleMap();
+      return {
+        status: battleManager.getStatus(),
+        battle: adapter.getBattleState(),
+        units: adapter.getBattleUnits(),
+        map: m.available
+          ? { mapId: m.mapId, width: m.width, height: m.height, cellCount: m.cellCount, tilePicId: m.tilePicId }
+          : m,
+        selection: s ? s.selection : null,
+        diagnostics: s ? s.getDiagnostics() : null,
+      };
+    },
+    selectUnit: (id) => {
+      const s = battleManager.scene;
+      return s ? s.selectUnit(id, { source: 'debug' }) : null;
+    },
+    selectCell: (x, y) => {
+      const s = battleManager.scene;
+      return s ? s.selectCell({ x, y }) : null;
+    },
+    pick: (ndcX, ndcY) => {
+      const s = battleManager.scene;
+      return s && s.interaction ? s.interaction.pick(ndcX, ndcY) : null;
+    },
+    /** 格子中心 -> 屏幕像素（测试点击用；只做投影，不改坐标）。 */
+    cellScreenPosition: (x, y, viewport) => {
+      const s = battleManager.scene;
+      if (!s || !s.camera) return null;
+      const w = s.battleCoord.gridToWorld(x, y);
+      const v = new THREE.Vector3();
+      const projector = (p) => { v.set(p.x, p.y, p.z).project(s.camera); return { x: v.x, y: v.y, z: v.z }; };
+      return s.battleCoord.worldToScreen(w, projector, viewport);
+    },
     runSmoke,
     switchScene,
   });
