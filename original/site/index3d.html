@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>三国霸业 · 3D 重制 P1 基础架构</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230c0e11'/%3E%3Ctext x='16' y='24' font-size='21' text-anchor='middle' fill='%23e0b04a'%3E%E9%9C%B8%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="p1/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./p1/vendor/three.module.js",
+    "three/addons/": "./p1/vendor/addons/"
+  }
+}
+</script>
+</head>
+<body data-p1-status="booting">
+
+<!-- ===================== 3D 展示区 ===================== -->
+<div id="p1-root">
+  <div id="p1-stage" aria-label="Three.js 3D 场景"></div>
+
+  <!-- ===================== HTML UI 层 ===================== -->
+  <div id="p1-ui" data-p1-ui>
+    <div id="p1-toolbar">
+      <span class="p1-title">三国霸业 · P1 架构验证</span>
+      <span id="p1-phase" class="p1-chip">启动中</span>
+      <button type="button" class="p1-btn" id="p1-toggle-panel">面板</button>
+      <button type="button" class="p1-btn" id="p1-toggle-legacy">原版画面</button>
+    </div>
+
+    <section id="p1-panel" class="p1-card" data-p1-ui-block>
+      <h2>运行状态</h2>
+      <dl id="p1-status-list" class="p1-kv"></dl>
+
+      <h2>场景切换（测试入口）</h2>
+      <div class="p1-row">
+        <button type="button" class="p1-btn" data-scene="world">战略地图</button>
+        <button type="button" class="p1-btn" data-scene="city">城市管理</button>
+        <button type="button" class="p1-btn" data-scene="battle">战斗</button>
+      </div>
+      <div class="p1-hint">测试入口只验证场景生命周期，不代表真实游戏操作结果。</div>
+
+      <h2>自检</h2>
+      <div class="p1-row">
+        <button type="button" class="p1-btn" id="p1-test-coords">坐标测试</button>
+        <button type="button" class="p1-btn" id="p1-test-adapter">适配层测试</button>
+        <button type="button" class="p1-btn" id="p1-test-events">事件测试</button>
+        <button type="button" class="p1-btn" id="p1-test-assets">资源测试</button>
+      </div>
+      <div class="p1-row">
+        <button type="button" class="p1-btn" id="p1-sync">手动同步</button>
+        <button type="button" class="p1-btn" id="p1-modal">弹窗穿透测试</button>
+      </div>
+
+      <h2>日志</h2>
+      <pre id="p1-log" class="p1-log"></pre>
+    </section>
+
+    <div id="p1-modal-overlay" class="p1-modal-overlay" hidden>
+      <div class="p1-card p1-modal" data-p1-ui-block>
+        <h2>UI 弹窗</h2>
+        <p>弹窗打开时，点击与滚轮不应穿透到 3D 场景；关闭后恢复。</p>
+        <button type="button" class="p1-btn" id="p1-modal-close">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 原版 2D 画面（保持原版 DOM，可折叠） ============ -->
+  <div id="p1-legacy">
+    <div id="app">
+      <div id="screen-wrap">
+        <canvas id="screen" width="240" height="320"></canvas>
+      </div>
+      <div id="status-bar">
+        <span id="status-text">加载中…</span>
+        <span id="status-actions">
+          <button class="mini-btn menu-btn" id="menu-btn">菜单</button>
+          <span id="scale-controls">
+            <button class="mini-btn" id="scale-down">－</button>
+            <span id="scale-label">×5</span>
+            <button class="mini-btn" id="scale-up">＋</button>
+          </span>
+        </span>
+      </div>
+      <div id="touch-controls">
+        <button class="key" data-key="esc">返回</button>
+        <div class="dpad">
+          <button class="key" data-key="up" aria-label="上">▲</button>
+          <button class="key" data-key="left" aria-label="左">◀</button>
+          <button class="key" data-key="down" aria-label="下">▼</button>
+          <button class="key" data-key="right" aria-label="右">▶</button>
+        </div>
+        <button class="key" data-key="enter">确认</button>
+      </div>
+      <div id="help-note">原版 2D 画面（P1 保留用于对照，游戏规则仍由 sgby.core.js 驱动）</div>
+    </div>
+  </div>
+</div>
+
+<!-- 原版内核：sgby.core.js = sgby.min.js + 只读导出尾注；原 index.html 与 sgby.min.js 未改动 -->
+<script type="module" src="sgby.core.js"></script>
+<script src="local-bridge.js"></script>
+<!-- P1 架构入口 -->
+<script type="module" src="./p1/main.mjs"></script>
+</body>
+</html>
