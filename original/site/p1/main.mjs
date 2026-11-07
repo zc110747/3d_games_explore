@@ -28,6 +28,11 @@ import { P4_VERSION } from '../p4/config.mjs';
 import { createBattleOps } from '../p5/boot.mjs';
 import { P5_VERSION, PHASES } from '../p5/config.mjs';
 import { splitMenuByRect } from '../p5/BattleFlowController.mjs';
+// P6：全局整合（统一入口 / 场景编排 / 状态同步 / 存档 / 异常）
+import { AppLifecycle } from '../p6/AppLifecycle.mjs';
+import { createIntegration } from '../p6/boot.mjs';
+import { P6_VERSION } from '../p6/config.mjs';
+import { PresentationStore } from '../p6/PresentationStore.mjs';
 
 const $ = (id) => document.getElementById(id);
 const logEl = $('p1-log');
@@ -82,13 +87,27 @@ async function boot() {
   const p3Chip = $('p3-chip');
   const p4Chip = $('p4-chip');
   const p5Chip = $('p5-chip');
+  const p6Chip = $('p6-chip');
+  const savePanel = $('p6-saves');
+  const slotList = $('p6-slot-list');
+  const saveGate = $('p6-save-gate');
   let mapScene = null;
   let interaction = null;
   let debugPanel = null;
   let cityManager = null;
   let battleManager = null;
   let battleOps = null;
+  let integration = null;
   let scenesReady = false;   // 防止 RenderManager 构造期 resize 访问尚未初始化的 scenes
+
+  // P6：统一启动入口。每个初始化阶段只跑一次，重复执行会立刻报错而不是静默双开。
+  const lifecycle = new AppLifecycle({
+    log: (msg) => log(`[P6] ${msg}`),
+    onStateChange: (to, from) => log(`运行状态 ${from} -> ${to}`),
+  });
+  lifecycle.startedAt = Date.now();
+  // 启动失败时 boot() 的 catch 在作用域外，这里把生命周期挂到 window 供其标记 failed
+  if (typeof window !== 'undefined') window.__SGBY_LIFECYCLE__ = lifecycle;
 
   const events = new EventManager();
   const coordinate = new CoordinateSystem();
@@ -114,6 +133,14 @@ async function boot() {
   const scenes = new SceneManager({ events, adapter });
   scenesReady = true;
 
+  // P6：登记必须唯一的全局对象。第二个实例出现会当场抛错，而不是两套渲染/两套状态并存。
+  lifecycle.claim('events', events);
+  lifecycle.claim('renderer', renderManager);
+  lifecycle.claim('coordinate', coordinate);
+  lifecycle.claim('assets', assets);
+  lifecycle.claim('adapter', adapter);
+  lifecycle.claim('scenes', scenes);
+
   const deps = {
     THREE, assets, events, coordinate, cameraManager, adapter, uiContainer: uiRoot,
     worldCamera, mapCoordinate,
@@ -137,14 +164,23 @@ async function boot() {
     if (now - lastStatusAt > 300) { lastStatusAt = now; renderStatus(); }
   });
   renderManager.start();
+  lifecycle.claim('loop', renderManager);   // 唯一渲染循环（RenderManager.start 幂等）
 
   // ---------------------------------------------------------- 状态面板
+  let lastConsistencyAt = 0;
+  let cachedConsistency = null;
   function renderStatus() {
     const coreReady = !!(core && core.Dn && core.lib);
     const gs = coreReady ? adapter.getGameState() : null;
     const info = renderManager.getInfo();
     const ev = events.getStats();
     const inp = input.getStats();
+    // P6：一致性检查按 1s 节流（只比对真实数据，不在每帧做全量扫描）
+    const nowTs = performance.now();
+    if (integration && nowTs - lastConsistencyAt > 1000) {
+      lastConsistencyAt = nowTs;
+      try { cachedConsistency = integration.sync.consistency(); } catch (_) { cachedConsistency = null; }
+    }
     const rows = [
       ['Three.js 版本', THREE_VERSION],
       ['内核桥接', core ? `${core.version} / ${core.source}` : '未就绪'],
@@ -209,6 +245,37 @@ async function boot() {
         if (!a) return '—';
         return `${a.active || '空闲'} · 排队 ${a.pending} · 完成 ${a.finished} / 超时 ${a.timedOut} / 取消 ${a.cancelled}`;
       })()],
+      // ---------------------------------------------------------------- P6
+      ['P6 运行状态', (() => {
+        const s = lifecycle.summary();
+        return `${s.state} · ${s.stages} 阶段（失败 ${s.failed} / 重复 ${s.duplicates}）`;
+      })()],
+      ['P6 场景切换', (() => {
+        if (!integration) return '—';
+        const d = integration.director.getStatus();
+        return `${d.transitions} 次 · 拒绝 ${d.rejected} · 循环拦截 ${d.loops} · 当前 ${d.currentId}`;
+      })()],
+      ['P6 UI 栈 / 输入', (() => {
+        if (!integration) return '—';
+        const s = integration.ui.getStatus();
+        return `${s.open} 层（峰值 ${s.stack.peakDepth}）· 输入${s.blocking ? '阻断' : '开放'} · 重复打开 ${s.stack.duplicates}`;
+      })()],
+      ['P6 一致性', (() => {
+        if (!cachedConsistency) return '—';
+        return cachedConsistency.ok ? '一致' : cachedConsistency.mismatches.join('；');
+      })()],
+      ['P6 存档槽', (() => {
+        if (!integration) return '—';
+        const s = integration.saves.getStatus();
+        return `${s.slots.filter((x) => x.exists).length}/${s.slots.length} 已用 · `
+          + `可存 ${s.canSave.ok ? '是' : '否'} / 可读 ${s.canLoad.ok ? '是' : '否'}`
+          + ` · 期望 ${s.expected ? s.expected.base + '/' + s.expected.dyn + 'B' : '—'}`;
+      })()],
+      ['P6 异常 / 恢复', (() => {
+        if (!integration) return '—';
+        const e = integration.errors.getStatus();
+        return `上报 ${e.reports}（致命 ${e.fatal}）· 恢复 ${e.recovered} · 失败 ${e.recoveryFailures}`;
+      })()],
     ];
     if (statusList) {
       statusList.replaceChildren();
@@ -243,6 +310,19 @@ async function boot() {
           : `操作接管 · ${st.phase}`;
       p5Chip.style.color = st && st.active ? '#9ad0ff' : '';
     }
+    if (p6Chip) {
+      if (!integration) {
+        p6Chip.textContent = '整合未装配';
+      } else {
+        const d = integration.director.getStatus();
+        const used = integration.saves.getStatus().slots.filter((x) => x.exists).length;
+        const bad = cachedConsistency && !cachedConsistency.ok;
+        p6Chip.textContent = bad
+          ? `整合 · 不一致 ${cachedConsistency.mismatches.length} 项`
+          : `整合 · ${d.currentId} · 存档 ${used}/3`;
+        p6Chip.style.color = bad ? '#e08a7a' : (lifecycle.state === 'running' ? '#9ad0ff' : '');
+      }
+    }
     if (debugPanel && mapScene && coreReady) {
       try { refreshDebug(); } catch (e) { /* 状态切换瞬间忽略 */ }
     }
@@ -270,6 +350,91 @@ async function boot() {
       input: interaction?.getStats() || null,
       intent: interaction?.intent || 'cursor',
     });
+  }
+
+  // ---------------------------------------------------------- P6 存档面板
+  /**
+   * 存档面板：只是原版 ac()/oc() 的遥控器。
+   * 每个槽位显示「原版头部里的年份 + 君主」与两片字节数，不解析、不改写任何字段。
+   */
+  function renderSavePanel() {
+    if (!slotList || !integration) return;
+    const status = integration.saves.getStatus();
+    slotList.replaceChildren();
+    for (const s of integration.saves.inspectAll()) {
+      const row = document.createElement('div');
+      row.className = 'p6-slot';
+
+      const label = document.createElement('div');
+      label.className = 'p6-slot-label';
+      label.textContent = `槽位 ${s.slot + 1} · ${s.label}`;
+      const meta = document.createElement('span');
+      meta.className = `p6-slot-meta${s.exists && !s.sizeMatch ? ' bad' : ''}`;
+      meta.textContent = s.exists
+        ? `base ${s.bytes.base}B / dyn ${s.bytes.dyn}B`
+          + `${s.sizeMatch ? ' · 与容量公式一致' : ` · 期望 ${s.expect ? s.expect.base + '/' + s.expect.dyn : '?'}`}`
+        : '空槽';
+      label.append(meta);
+      row.append(label);
+
+      const saveBtn = document.createElement('button');
+      saveBtn.type = 'button';
+      saveBtn.className = 'p6-btn-mini';
+      saveBtn.textContent = '存入';
+      saveBtn.disabled = !status.canSave.ok;
+      saveBtn.addEventListener('click', () => {
+        const r = integration.saves.save(s.slot, { reason: '界面' });
+        integration.ui.toast(r.ok
+          ? `已写入槽位 ${s.slot + 1}（原版 ac()，${r.bytes.base}/${r.bytes.dyn} B）`
+          : `未写入：${r.reason}`, r.ok ? 'ok' : 'error', 4200);
+        renderSavePanel();
+      });
+
+      const loadBtn = document.createElement('button');
+      loadBtn.type = 'button';
+      loadBtn.className = 'p6-btn-mini';
+      loadBtn.textContent = '读取';
+      loadBtn.disabled = !s.exists || !status.canLoad.ok;
+      loadBtn.addEventListener('click', async () => {
+        const ok = await integration.ui.confirm(
+          `读取槽位 ${s.slot + 1}？`,
+          `将从原版存档恢复：${s.label}。\n当前未保存的进度会丢失（原版 oc() 直接覆盖 Dn）。`,
+        );
+        if (!ok) return;
+        const r = integration.saves.load(s.slot, { reason: '界面' });
+        integration.ui.toast(r.ok
+          ? `已读取槽位 ${s.slot + 1}：${r.afterState.year} 年 ${r.afterState.month} 月`
+          : `读取失败：${r.reason}`, r.ok ? 'ok' : 'error', 6000);
+        renderSavePanel();
+      });
+
+      row.append(saveBtn, loadBtn);
+      slotList.append(row);
+    }
+    if (saveGate) {
+      const blocks = [];
+      if (!status.canSave.ok) blocks.push(`存：${status.canSave.reasons.join('；')}`);
+      if (!status.canLoad.ok) blocks.push(`读：${status.canLoad.reasons.join('；')}`);
+      saveGate.textContent = blocks.length
+        ? blocks.join('\n')
+        : `可存可读 · 存档格式 ${status.format.header.map((b) => String.fromCharCode(b)).join('')} v${status.format.version}（非原子：失败后建议重启页面）`;
+      saveGate.className = `p6-gate${blocks.length ? ' bad' : ''}`;
+    }
+  }
+
+  function bindSavePanel() {
+    if (!savePanel || !integration) return;
+    const toggle = $('p6-toggle-saves');
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        savePanel.hidden = !savePanel.hidden;
+        if (!savePanel.hidden) renderSavePanel();
+      });
+    }
+    renderSavePanel();
+    // 低频刷新门禁文案（战斗中/指令上下文的说明会随状态变化），只在面板可见时做。
+    // 计时器统一登记到 lifecycle，dispose 时一定被清掉。
+    lifecycle.interval(() => { if (savePanel && !savePanel.hidden) renderSavePanel(); }, 1200, 'p6-save-panel');
   }
 
   // ---------------------------------------------------------- 自检套件
@@ -725,6 +890,120 @@ async function boot() {
     });
     suites.push(p5.summary());
 
+    // ---------------------------------------------------------- P6 全局整合自检
+    const p6 = makeSuite('P6 全局整合');
+    p6.check('统一启动入口：阶段化执行且无重复初始化', () => {
+      if (!integration) throw new Error('P6 未装配');
+      const s = lifecycle.summary();
+      if (s.duplicates !== 0) throw new Error(`${s.duplicates} 处重复初始化`);
+      if (!['ready', 'running'].includes(s.state)) throw new Error(`状态 ${s.state}`);
+      for (const k of ['renderer', 'loop', 'events', 'adapter']) {
+        if (!s.singletons.includes(k)) throw new Error(`缺少唯一对象 ${k}`);
+      }
+      return `${s.stages} 阶段 / ${s.totalMs}ms / 唯一对象 ${s.singletons.join(',')}`;
+    });
+    p6.check('全局对象唯一性守卫（重复登记第二个实例必须报错）', () => {
+      const dupBefore = lifecycle.stats.duplicates;
+      let threw = false;
+      try { lifecycle.claim('loop', { fake: true }, { allowSame: false }); } catch (_) { threw = true; }
+      // 自检故意触发的计数不计入运行统计，避免状态面板出现假告警
+      lifecycle.stats.duplicates = dupBefore;
+      if (!threw) throw new Error('重复登记未被拒绝');
+      // 同一实例重复登记应被允许（幂等）
+      lifecycle.claim('loop', renderManager);
+      return '不同实例被拒绝 / 同一实例幂等';
+    });
+    p6.check('UI 栈：同 id 不叠加阻断，全部出栈后输入恢复', () => {
+      const stack = integration.ui.stack;
+      const base = stack.depth;
+      const t1 = stack.push('p6-selftest', { layer: 70 });
+      const t2 = stack.push('p6-selftest', { layer: 70 });
+      const dup = stack.stats.duplicates;
+      const depth1 = stack.depth;
+      stack.close(t2);
+      const stillBlocked = stack.blocking;
+      stack.close(t1);
+      const blockedAfter = stack.blocking;
+      void dup;
+      if (depth1 !== base + 1) throw new Error(`重复打开叠加了图层：${base} -> ${depth1}`);
+      if (!stillBlocked) throw new Error('关闭前输入应保持阻断（重复 token 不应释放阻断）');
+      if (blockedAfter) throw new Error('全部出栈后仍在阻断输入');
+      return `重复打开去重（累计 ${stack.stats.duplicates} 次）/ 输入恢复=${!blockedAfter}`;
+    });
+    p6.check('表现配置与原版存档分离（键名与字段双重隔离）', () => {
+      const before = [];
+      if (typeof localStorage !== 'undefined') {
+        for (let i = 0; i < localStorage.length; i++) before.push(localStorage.key(i));
+      }
+      const r = integration.presentation.save({ camera: { x: 1, z: -2, zoom: 1.1 } });
+      const audit = PresentationStore.auditPayload(r.payload);
+      if (!audit.ok) throw new Error(`表现配置含业务字段：${audit.hits.join(',')}`);
+      const after = [];
+      if (typeof localStorage !== 'undefined') {
+        for (let i = 0; i < localStorage.length; i++) after.push(localStorage.key(i));
+      }
+      const savTouched = after.filter((k) => /\.sav$/.test(k) && !before.includes(k));
+      if (savTouched.length) throw new Error(`写入了存档键：${savTouched.join(',')}`);
+      if (!r.ok) throw new Error('表现配置写入失败（localStorage 不可用）');
+      return `键 ${integration.presentation.key} / 字段 ${audit.keys.join(',')}`;
+    });
+    p6.check('存档槽信息来自原版 jn() 与容量公式', () => {
+      const cap = core.p6 ? core.p6.capacity : null;
+      if (!cap) throw new Error('内核未导出 p6.capacity');
+      const st = integration.saves.getStatus();
+      if (st.slots.length !== 3) throw new Error(`槽位 ${st.slots.length}`);
+      const expect = st.expected;
+      const calc = { base: 35 + 19 * cap.persons + 2 * cap.persons + 2 * cap.goods, dyn: 2035 + 37 * cap.cities };
+      if (expect.base !== calc.base || expect.dyn !== calc.dyn) {
+        throw new Error(`期望长度 ${JSON.stringify(expect)} ≠ ${JSON.stringify(calc)}`);
+      }
+      for (const s of integration.saves.inspectAll()) {
+        const keys = core.fns.jn(s.slot);
+        if (!Array.isArray(keys) || keys.length !== 2) throw new Error(`jn(${s.slot}) 返回异常`);
+        if (s.keys.join('|') !== keys.join('|')) throw new Error('槽位 key 与 jn() 不一致');
+      }
+      return `3 槽 / 期望 base ${expect.base}B + dyn ${expect.dyn}B（${cap.persons} 将 / ${cap.cities} 城 / ${cap.goods} 道具）`;
+    });
+    p6.check('存档准入判断如实（未进剧本时不允许存/读）', () => {
+      const st = integration.saves.getStatus();
+      if (st.canSave.ok || st.canLoad.ok) {
+        throw new Error(`未进剧本却报可存/可读：${JSON.stringify({ save: st.canSave, load: st.canLoad })}`);
+      }
+      return st.canSave.reasons.concat(st.canLoad.reasons).slice(0, 2).join(' / ');
+    });
+    p6.check('状态一致性（城市/旗帜/选中/场景/渲染循环）', () => {
+      const c = integration.sync.consistency();
+      if (!c.ok) throw new Error(c.mismatches.join('；'));
+      return `${c.detail.cities} 城 / ${c.detail.flags} 旗 / 场景 ${c.detail.sceneId}`;
+    });
+    p6.check('刷新器登记无重复（同一名字不允许注册两次）', () => {
+      let threw = false;
+      try { integration.sync.register('world', () => {}); } catch (_) { threw = true; }
+      if (!threw) throw new Error('重复登记刷新器未被拒绝');
+      return integration.sync.refreshers.join('/');
+    });
+    p6.check('异常上报分级：可恢复不弹致命面板', () => {
+      const err = new Error('P6 自检用可恢复错误');
+      const before = integration.errors.getStatus();
+      const entry = integration.errors.report('selftest:recoverable', err, { context: { phase: 'boot' } });
+      if (entry.level !== 'recoverable') throw new Error(`级别 ${entry.level}`);
+      if (integration.ui.fatalVisible) throw new Error('可恢复错误弹出了致命面板');
+      if (integration.errors.getStatus().reports !== before.reports + 1) throw new Error('上报计数未增加');
+      integration.errors.clear('selftest:recoverable');
+      return 'recoverable / 无致命面板';
+    });
+    p6.check('场景切换拒绝路径（非法目标被拦下且不改场景）', () => {
+      const d0 = integration.director.getStatus();
+      let rejected = false;
+      try { integration.director.switchTo('world', { reason: '自检：非法目标' }); } catch (_) { rejected = true; }
+      const d1 = integration.director.getStatus();
+      if (!rejected) throw new Error('world -> world 未被拒绝（SCENE_TRANSITIONS 应挡住）');
+      if (d1.currentId !== 'world') throw new Error(`当前场景被改动：${d1.currentId}`);
+      if (d1.rejected <= d0.rejected) throw new Error('拒绝次数未增加');
+      return `拒绝 ${d1.rejected} 次 / 当前 ${d1.currentId}`;
+    });
+    suites.push(p6.summary());
+
     const pass = suites.reduce((n, s) => n + s.pass, 0);
     const fail = suites.reduce((n, s) => n + s.fail, 0);
     if (verbose) {
@@ -742,15 +1021,18 @@ async function boot() {
   /** 场景切换（测试入口，明确不伪造游戏操作结果）。 */
   function switchScene(id) {
     try {
+      // P6：所有切换统一走 SceneDirector（带锁、循环检测、战斗前后状态保存/恢复）。
+      // 测试入口仍然只验证生命周期，不执行任何原版游戏操作。
+      const ctx = { reason: 'P1 测试入口' };
       if (id === SCENE_IDS.CITY) {
         const gs = adapter.getGameState();
         const mine = adapter.getCities().find((c) => c.ownerId === gs.playerKing + 1);
-        scenes.switchTo(id, { cityId: mine ? mine.id : 0, reason: 'P1 测试入口' });
-      } else if (id === SCENE_IDS.BATTLE) {
-        scenes.switchTo(id, { reason: 'P1 测试入口' });
-      } else {
-        scenes.switchTo(id, { reason: 'P1 测试入口' });
+        ctx.cityId = mine ? mine.id : 0;
       }
+      const r = integration
+        ? integration.director.switchTo(id, ctx)
+        : scenes.switchTo(id, ctx);
+      if (r && r.ok === false) throw new Error(r.reason || '切换被拒绝');
       log(`场景切换 -> ${id}（测试入口，未执行任何原版游戏操作）`);
     } catch (e) { log(`场景切换被拒绝：${e.message}`); }
     renderStatus();
@@ -817,9 +1099,12 @@ async function boot() {
     log(`事件 CITY_OWNER_CHANGED #${cityId} ${oldOwnerId} -> ${newOwnerId}（原版 Dn）`));
 
   // ---------------------------------------------------------- 启动顺序
+  // P6：所有初始化阶段经 AppLifecycle 执行 —— 每个阶段只允许跑一次，
+  // 失败时会给出「失败在哪个阶段」，而不是一句「启动失败」。
   document.body.dataset.p1Status = 'connecting';
-  log(`P2 启动；Three.js ${THREE_VERSION} / P2 ${P2_VERSION}；等待原版内核…`);
-  await adapter.connect();
+  lifecycle.setState('connecting');
+  log(`P6 启动；Three.js ${THREE_VERSION} / P6 ${P6_VERSION}；等待原版内核…`);
+  await lifecycle.stage('adapter.connect', () => adapter.connect());
   log(`内核已连接：城市 ${core.Dn.g_Cities.length}、武将 ${core.Dn.g_Persons.length}、资源库 ${!!core.lib}`);
   scenes.switchTo(SCENE_IDS.WORLD, { reason: 'P2 启动' });
   mapScene = scenes.current;
@@ -849,6 +1134,24 @@ async function boot() {
     log: (msg) => log(`[P5] ${msg}`),
   });
   log(`P5 战斗操作已装配：接管 ${core.p5 ? core.p5.widgetNames.join(' / ') : '（内核无 p5，操作仍在 2D）'}`);
+
+  // ---------------------------------------------------------- P6 全局整合
+  // 装配顺序即依赖顺序：UI 栈 -> 表现配置 -> 场景编排 -> 状态同步 -> 存档 -> 异常。
+  // 所有 getXxx 都是惰性读取，避免「装配时场景还没建好」的时序问题。
+  integration = createIntegration({
+    core, adapter, events, scenes, input, uiHost: uiRoot,
+    renderManager, cameraManager, worldCamera, lifecycle,
+    log: (msg) => log(msg),
+    getWorldScene: () => mapScene,
+    getCityManager: () => cityManager,
+    getBattleManager: () => battleManager,
+    getBattleOps: () => battleOps,
+    getInteraction: () => interaction,
+  });
+  integration.start();
+  lifecycle.setState('ready');
+  bindSavePanel();
+  log(`P6 全局整合已装配：存档 ${integration.saves.slots().length} 槽 · UI 栈 · 一致性检查`);
   log('提示：点「原版画面」在主菜单开新局，进入剧本后点击己方城市即可打开城市管理');
   renderManager.resize();           // 触发 worldCamera.fit，保证整图可见
   renderStatus();
@@ -1012,11 +1315,47 @@ async function boot() {
     switchScene,
   });
 
+  /** P6 全局整合调试/自动化入口（场景编排 / 存档 / 一致性 / 异常）。 */
+  window.__P6__ = Object.freeze({
+    version: P6_VERSION,
+    manager: integration,
+    ui: integration.ui,
+    stack: integration.ui.stack,
+    director: integration.director,
+    sync: integration.sync,
+    saves: integration.saves,
+    errors: integration.errors,
+    presentation: integration.presentation,
+    lifecycle,
+    getStatus: () => integration.getStatus(),
+    getSnapshot: () => integration.getSnapshot(),
+    /** 场景编排语义入口（等价于真实流程，但由测试显式触发）。 */
+    toWorld: (reason) => integration.director.switchTo('world', { reason: reason || 'P6 测试' }),
+    toBattle: (reason) => integration.director.switchTo('battle', { reason: reason || 'P6 测试' }),
+    switchScene,
+    /** 存档：全部经原版 ac()/oc()；返回值如实标注是否被接受。 */
+    saveSlot: (slot, reason) => integration.saves.save(slot, { reason: reason || 'test' }),
+    loadSlot: (slot, reason) => integration.saves.load(slot, { reason: reason || 'test' }),
+    inspectSlots: () => integration.saves.inspectAll(),
+    consistency: () => integration.sync.consistency(),
+    /** 强制全量同步（读档后/战斗后表现层重建）。 */
+    fullSync: (reason) => integration.sync.fullSync(reason || 'test'),
+    /** 表现配置（与存档分离；重置后回到默认视角）。 */
+    savePresentation: (reason) => integration.savePresentation(reason || 'test'),
+    resetPresentation: () => integration.presentation.reset(),
+    uiOpen: () => integration.ui.getStatus(),
+    runSmoke,
+    switchScene,
+  });
+
+  lifecycle.setState('running');
+  renderStatus();
   return window.__P1__;
 }
 
 boot().catch((e) => {
   document.body.dataset.p1Status = 'error';
+  try { if (window.__SGBY_LIFECYCLE__) window.__SGBY_LIFECYCLE__.setState('failed'); } catch (_) { /* ignore */ }
   log(`启动失败：${e.stack || e.message}`);
   console.error('[P1] 启动失败', e);
 });

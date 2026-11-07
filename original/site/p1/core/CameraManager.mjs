@@ -86,6 +86,26 @@ export class CameraManager {
     return true;
   }
 
+  /**
+   * P6：把相机恢复到指定视图（场景切换/读档后还原表现状态用）。
+   * 仍然受同一套边界与缩放上下限约束 —— 传入越界值会被钳位，不会出现「相机飞出去」。
+   * 只改视图，不改任何游戏数据。
+   */
+  setView(camera, { target = null, zoom = null } = {}) {
+    const state = this._state.get(camera);
+    if (!state) return false;
+    const { panLimitX, panLimitZ, minZoom, maxZoom } = state.cfg;
+    if (Array.isArray(target) && target.length >= 3) {
+      const [x, , z] = target;
+      const nx = Math.max(-panLimitX, Math.min(panLimitX, Number(x) || 0));
+      const nz = Math.max(-panLimitZ, Math.min(panLimitZ, Number(z) || 0));
+      state.target.set(nx, 0, nz);
+    }
+    if (Number.isFinite(zoom)) state.zoom = Math.max(minZoom, Math.min(maxZoom, Number(zoom)));
+    this._applyDirection(camera, state);
+    return true;
+  }
+
   /** 由 RenderManager.resize() 调用：所有相机共用同一个 aspect。 */
   onResize(aspect) {
     for (const camera of this._state.keys()) this.updateProjection(camera, aspect);

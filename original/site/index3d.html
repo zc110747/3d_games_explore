@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>三国霸业 · 3D 重制 P5 战棋战斗</title>
+<title>三国霸业 · 3D 重制 P6 全局整合</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230c0e11'/%3E%3Ctext x='16' y='24' font-size='21' text-anchor='middle' fill='%23e0b04a'%3E%E9%9C%B8%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="p1/style.css">
@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="p3/style.css">
 <link rel="stylesheet" href="p4/style.css">
 <link rel="stylesheet" href="p5/style.css">
+<link rel="stylesheet" href="p6/style.css">
 <script type="importmap">
 {
   "imports": {
@@ -29,18 +30,32 @@
   <!-- ===================== HTML UI 层 ===================== -->
   <div id="p1-ui" data-p1-ui>
     <div id="p1-toolbar">
-      <span class="p1-title">三国霸业 · P5 三维战棋</span>
+      <span class="p1-title">三国霸业 · P6 全局整合</span>
       <span id="p1-phase" class="p1-chip">启动中</span>
       <span id="p3-chip" class="p1-chip">城市 UI 待命</span>
       <span id="p4-chip" class="p1-chip">战斗待命</span>
       <span id="p5-chip" class="p1-chip">操作待命</span>
+      <span id="p6-chip" class="p1-chip">整合待命</span>
+      <button type="button" class="p1-btn" id="p6-toggle-saves">存档</button>
       <button type="button" class="p1-btn" id="p2-toggle-panel">地图调试</button>
       <button type="button" class="p1-btn" id="p1-toggle-panel">P1 面板</button>
       <button type="button" class="p1-btn" id="p1-toggle-legacy">原版画面</button>
     </div>
 
+    <!-- P6：原版存档槽（ac()/oc()），与 3D 表现配置完全分离 -->
+    <section id="p6-saves" class="p6-save-panel" hidden>
+      <h2>原版存档（3 槽）</h2>
+      <p class="p6-save-note">
+        槽位读写走原版 ac()/oc()，格式仍是 SGB3 + v4，P6 不新增任何字段。
+        读档需要原版停在战略选城阶段；战斗与指令执行中会拒绝并说明原因。
+      </p>
+      <div id="p6-slot-list"></div>
+      <p id="p6-save-gate" class="p6-gate"></p>
+    </section>
+
     <section id="p2-panel" class="p1-card" data-p1-ui-block></section>
     <div id="p2-hint">3D 战略地图 · 左键拖动 · 滚轮缩放 · 点击城市 = 原版选城（己方城进入城市管理）</div>
+    <div id="p6-hint">战略地图 · 点击城市进入管理 · 「存档」面板使用原版 ac()/oc()</div>
 
     <section id="p1-panel" class="p1-card hidden" data-p1-ui-block>
       <h2>运行状态</h2>

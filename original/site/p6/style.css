@@ -1,0 +1,233 @@
+/* P6 全局整合层 —— 弹窗 / 提示 / 致命错误 / 存档面板
+   沿用 P2~P5 的暗色木质 + 金色描边语汇，不引入新色系。
+   两条铁律（P3 踩过）：
+     1. 根容器 pointer-events:none，只有可交互部件 auto；
+     2. data-p1-ui-block 只挂在真正可见的部件上。 */
+
+#p6-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-size: 12.5px;
+  color: #eadcc0;
+}
+
+/* --------------------------------------------------------------- 提示条 */
+.p6-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 92px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  pointer-events: none;
+}
+
+.p6-toast-item {
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(14, 12, 9, .86);
+  border: 1px solid rgba(200, 160, 90, .42);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .5);
+  white-space: nowrap;
+  animation: p6-toast-in .18s ease-out;
+}
+
+.p6-toast-item.p6-ok { border-color: rgba(120, 200, 140, .6); color: #bfe8c6; }
+.p6-toast-item.p6-warn { border-color: rgba(224, 176, 74, .7); color: #f0d79a; }
+.p6-toast-item.p6-error { border-color: rgba(230, 110, 90, .7); color: #ffb4a2; }
+
+@keyframes p6-toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* --------------------------------------------------------------- 弹窗 */
+.p6-modal-layer {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.p6-modal-layer[hidden] { display: none; }
+
+.p6-modal {
+  pointer-events: auto;
+  max-width: min(560px, calc(100vw - 120px));
+  max-height: 74vh;
+  overflow: auto;
+}
+
+.p6-modal-card {
+  background: linear-gradient(180deg, rgba(30, 26, 20, .98), rgba(18, 16, 12, .98));
+  border: 1px solid rgba(200, 160, 90, .5);
+  border-radius: 10px;
+  padding: 16px 18px 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .62);
+}
+
+.p6-modal-card h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  letter-spacing: .06em;
+  color: #f0d79a;
+}
+
+.p6-modal-sub {
+  margin: 0 0 10px;
+  font-size: 11.5px;
+  color: #a89671;
+  line-height: 1.55;
+}
+
+.p6-modal-card p {
+  margin: 0 0 8px;
+  line-height: 1.7;
+  color: #e0d3b6;
+}
+
+.p6-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+/* --------------------------------------------------------------- 致命错误 */
+.p6-fatal {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 7, 5, .78);
+  pointer-events: auto;
+}
+
+.p6-fatal[hidden] { display: none; }
+
+.p6-fatal-card {
+  max-width: min(680px, calc(100vw - 100px));
+  max-height: 78vh;
+  overflow: auto;
+  padding: 18px 20px;
+  border-radius: 10px;
+  background: #1a1510;
+  border: 1px solid rgba(230, 110, 90, .6);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .7);
+}
+
+.p6-fatal-card h2 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  color: #ffb4a2;
+}
+
+.p6-fatal-msg {
+  margin: 0;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  color: #ddc9a8;
+}
+
+/* --------------------------------------------------------------- 存档面板 */
+.p6-save-panel {
+  position: absolute;
+  right: 16px;
+  top: 92px;
+  width: 300px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, rgba(28, 24, 18, .96), rgba(16, 14, 11, .96));
+  border: 1px solid rgba(200, 160, 90, .45);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .55);
+  pointer-events: auto;
+  z-index: 41;
+}
+
+.p6-save-panel[hidden] { display: none; }
+
+.p6-save-panel h2 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  color: #f0d79a;
+  letter-spacing: .06em;
+}
+
+.p6-save-note {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: #9c8d6d;
+}
+
+.p6-slot {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+  align-items: center;
+  padding: 7px 0;
+  border-top: 1px dashed rgba(200, 160, 90, .18);
+}
+
+.p6-slot:first-of-type { border-top: 0; }
+
+.p6-slot-label {
+  font-size: 11.5px;
+  color: #d9c9a4;
+  line-height: 1.45;
+}
+
+.p6-slot-meta {
+  display: block;
+  font-size: 10.5px;
+  color: #8d7f62;
+  margin-top: 2px;
+}
+
+.p6-slot-meta.bad { color: #e08a7a; }
+
+.p6-btn-mini {
+  padding: 3px 9px;
+  font-size: 11px;
+  border-radius: 6px;
+  border: 1px solid rgba(200, 160, 90, .5);
+  background: rgba(58, 46, 28, .7);
+  color: #e8d9b8;
+  cursor: pointer;
+}
+
+.p6-btn-mini:hover { background: rgba(84, 66, 38, .85); }
+.p6-btn-mini:disabled { opacity: .42; cursor: not-allowed; }
+
+.p6-gate {
+  margin: 8px 0 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: #a89671;
+  word-break: break-all;
+}
+
+.p6-gate.bad { color: #e0a08a; }
+
+/* 工具栏提示（场景语义） */
+#p6-hint {
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(14, 12, 9, .72);
+  border: 1px solid rgba(200, 160, 90, .26);
+  color: #bfae8b;
+  font-size: 11px;
+  pointer-events: none;
+}

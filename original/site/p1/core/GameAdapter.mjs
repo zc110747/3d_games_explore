@@ -70,7 +70,7 @@ export class GameAdapter {
     this._waiterKind = 'unknown';   // P2：最近一次 waitMsg 的调用协程（只读诊断）
     this._mapCache = { key: null, value: null };   // P4：战斗地图投影缓存（一场战斗内不变）
     this.stats = { syncCount: 0, inputHooks: 0, contextHooks: 0, lastSource: null,
-      selectionRequests: 0, injectedMessages: 0, battleClicks: 0 };
+      selectionRequests: 0, injectedMessages: 0, battleClicks: 0, forcedSyncs: 0 };
     this.capabilities = this._buildCapabilities();
   }
 
@@ -1116,8 +1116,20 @@ export class GameAdapter {
     ].join('#'));
   }
 
-  /** 比较真实状态快照，仅在变化时派发事件；不在渲染循环里无条件全量读取。 */
-  sync({ source = 'manual' } = {}) {
+  /** 当前状态签名（P6 存档前后比对用；不派发事件、不改状态）。 */
+  snapshotSignature() {
+    if (!this.core.Dn) return null;
+    return this._signature(this._snapshot());
+  }
+
+  /**
+   * 比较真实状态快照，仅在变化时派发事件；不在渲染循环里无条件全量读取。
+   *
+   * P6 增加 force：读档（oc）之后 Dn 被整体覆盖，但**可能**出现签名相同的情况
+   * （例如读的正是当前状态），此时表现层仍必须按新数据重建，因此允许强制全量派发。
+   * force 下的派发使用独立的 dedupe 键，不会被去重窗口吃掉。
+   */
+  sync({ source = 'manual', force = false } = {}) {
     if (!this.core.Dn) return { changed: false, reason: 'Dn 未就绪' };
     const now = this._snapshot();
     const prev = this._last;
@@ -1126,7 +1138,8 @@ export class GameAdapter {
     if (!prev) { this._last = now; return { changed: false, reason: '首次快照' }; }
     const sig = this._signature(now);
     const oldSig = this._signature(prev);
-    if (sig === oldSig) return { changed: false, signature: sig };
+    if (sig === oldSig && !force) return { changed: false, signature: sig };
+    const epoch = force ? `:f${++this.stats.forcedSyncs}` : '';
     const emitted = [];
 
     const turnChanged = now.year !== prev.year || now.month !== prev.month;
@@ -1139,20 +1152,20 @@ export class GameAdapter {
 
     const n = Math.min(now.cities.length, prev.cities.length);
     for (let i = 0; i < n; i++) {
-      if (now.cities[i] === prev.cities[i]) continue;
+      if (now.cities[i] === prev.cities[i] && !force) continue;
       const [belong, money, food, state, persons, satrap] = now.cities[i].split(',');
       const prevBelong = prev.cities[i].split(',')[0];
       if (belong !== prevBelong) {
         this.events.emit(EVENTS.CITY_OWNER_CHANGED, {
           cityId: i, oldOwnerId: Number(prevBelong), newOwnerId: Number(belong),
-        }, { dedupeKey: `owner:${i}:${prevBelong}:${belong}:${sig}` });
+        }, { dedupeKey: `owner:${i}:${prevBelong}:${belong}:${sig}${epoch}` });
         emitted.push(EVENTS.CITY_OWNER_CHANGED);
       } else {
         this.events.emit(EVENTS.CITY_UPDATED, {
           cityId: i,
           fields: freeze({ money: Number(money), food: Number(food), state: Number(state),
             officerCount: Number(persons), satrapId: Number(satrap) }),
-        }, { dedupeKey: `city:${i}:${sig}` });
+        }, { dedupeKey: `city:${i}:${sig}${epoch}` });
         emitted.push(EVENTS.CITY_UPDATED);
       }
     }
@@ -1184,8 +1197,8 @@ export class GameAdapter {
     }
 
     this.events.emit(EVENTS.GAME_STATE_UPDATED, {
-      signature: sig, source, turn: freeze({ year: now.year, month: now.month }),
-    }, { dedupeKey: `state:${sig}` });
+      signature: sig, source, force: !!force, turn: freeze({ year: now.year, month: now.month }),
+    }, { dedupeKey: `state:${sig}${epoch}` });
     emitted.push(EVENTS.GAME_STATE_UPDATED);
 
     this._last = now;

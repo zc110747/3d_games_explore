@@ -202,7 +202,8 @@ test('Uo shim 用 finally 保证战斗异常也会通知 exit', () => {
 });
 
 test('内核版本与导出点数量（18 处改名：P3 7 + P4 2 + P5 9）标注一致', () => {
-  assert.ok(coreJs.includes("version: '5.0.0-p5'"), '版本未升级到 5.0.0-p5');
+  // P6 起版本号继续前推；这里只要求「不低于 P5 的内核契约」而不是钉死字符串
+  assert.ok(/version: '([5-9]|1\d)\.\d+\.\d+-p([4-9]|\d\d)'/.test(coreJs), '内核版本标注缺失或低于 P5');
   assert.ok(coreJs.includes("widgetNames: Object.freeze(['$r', 'Ls', 'Ms', 'vs', 'Hs', 'Gs', 'ka'])"));
   assert.ok(coreJs.includes("widgetNames: Object.freeze(['yo', 'Uo'])"));
   assert.ok(coreJs.includes("widgetNames: Object.freeze([\n        'bo', 'ko', 'vo', 'xo', 'Ao', 'Fo', 'Io', 'Eo', 'So',\n      ])"));

@@ -511,7 +511,7 @@ async function So() {
 
 ;(function () {
   var core = Object.freeze({
-    version: '5.0.0-p5',
+    version: '6.0.0-p6',
     source: 'sgby.min.js',
     get Dn() { return Dn; },
     get l() { return l; },
@@ -521,6 +521,8 @@ async function So() {
       zs: zs, qs: qs, ei: ei, mi: mi, ac: ac, oc: oc, jn: jn,
       // 原版只读查询函数（P3 城市 UI 直接调用，绝不复制其规则）
       $n: $n, ss: ss, Bs: Bs, Ys: Ys, Is: Is,
+      // P6 存档：存在性 / 头部信息 / 槽位标签（只读，全部是原版自己的实现）
+      Jn: Jn, Hn: Hn, sc: sc,
     }),
     // P3：接管点与原始实现（诊断/回退用；表现层正常路径不应调用 originals）
     p3: Object.freeze({
@@ -625,6 +627,42 @@ async function So() {
          * 因此 1 = 我军胜、2 = 我军败、0 = 进行中。
          */
         battleOver: Object.freeze({ none: 0, win: 1, lose: 2 }),
+      }),
+    }),
+    /**
+     * P6：原版存档系统的**只读事实**与原生入口。
+     *
+     * 全部直接引用原版符号，不做任何再实现：
+     *   magic/version   <- Rn=[83,71,66,51]（"SGB3"）/ Wn() 里写死的 4
+     *   keysFor(slot)   <- jn()，前缀可能被 URL ?save= 改成 "sgby.sango.<id>"
+     *   exists(slot)    <- Jn()（base/dyn 两片都必须在）
+     *   readHeader(slot)<- Hn()（king = t[6]|t[7]<<8，year = t[8]|t[9]<<8）
+     *   label(slot)     <- sc()（原版 3 槽列表里那行「武将名 + 年份」）
+     *   save/load       <- ac()/oc()（写/读 localStorage，返回 boolean）
+     *
+     * 注意：原版存档**不含战斗态**（ac/oc 的字段表里没有 g_FgtOver/g_MapWid/g_GenPos），
+     * 因此 P6 在战斗中拒绝存档/读档，而不是自己往存档里加字段。
+     */
+    p6: Object.freeze({
+      save: Object.freeze({
+        magic: Object.freeze(Array.prototype.slice.call(Rn)),
+        version: 4,
+        format: tr,
+        keyPrefix: Xn,
+        slots: 3,
+        keysFor: jn,
+        exists: Jn,
+        readHeader: Hn,
+        label: sc,
+        save: ac,
+        load: oc,
+        /** oc() 是逐字段写入，不是原子操作 —— 表现层必须按「可能半写入」处理失败。 */
+        atomic: false,
+      }),
+      /** 与存档长度校验同源的容量（Nn() 就是用这四个值判断存档是否匹配当前资源包）。 */
+      capacity: Object.freeze({
+        persons: Ae, cities: Fe, goods: Ie, skills: Ee,
+        orders: en, fighters: 300, cityW: fn, cityH: hn,
       }),
     }),
   });

@@ -668,6 +668,7 @@ try {
   let battleReady = null;
   let p4Enemy = null;
   let p4Own = null;
+  let p6PreBattleSave = null;
   const p4Boot = await p4Status();
   check('P4 调试接口就绪（内核 yo/Uo 钩子）', !!p4Boot && p4Boot.phase === 'idle',
     `phase=${p4Boot.phase} kernelEvents=${p4Boot.kernelEvents}`);
@@ -705,6 +706,24 @@ try {
 
   if (opened && p4Plan) {
     p4Own = p4Plan.own;
+
+    // ---- P6：出征前存档（原版仍停战略阶段 zs()，Dn 完整、无指令上下文）
+    //      战斗中不允许存档（原版存档格式不含战斗态），所以「战斗前」存档只能在这里做。
+    const p6PreGate = await waitFor(async () => {
+      const p = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getInputPhase())'));
+      return (p.kind === 'zs' && !p.inOrderContext) ? p : null;
+    }, 8000, 'P6 出征前存档准入').catch(() => null);
+    if (p6PreGate) {
+      p6PreBattleSave = JSON.parse(await evaluate('JSON.stringify(window.__P6__.saveSlot(2, "P6 战前存档"))'));
+    }
+    check('P6 战前存档写入槽位 3（原版 ac()）',
+      !!p6PreBattleSave && p6PreBattleSave.ok === true && p6PreBattleSave.sizeMatch === true,
+      p6PreBattleSave
+        ? (p6PreBattleSave.ok
+          ? `${p6PreBattleSave.bytes.base}/${p6PreBattleSave.bytes.dyn} B，${p6PreBattleSave.header.year} 年`
+          : p6PreBattleSave.reason)
+        : `原版未回到 zs()（kind=${p6PreGate ? p6PreGate.kind : '超时'}）`);
+
     // ---- 重新进入城市菜单
     await evaluate(`window.__P2__.selectCity(${p4Own.id})`);
     const menu2 = await waitFor(async () => {
@@ -723,6 +742,7 @@ try {
       const armsItems = await evaluate('document.querySelectorAll("#p3-list button.p3-item").length');
       check('军备 5 项且含出征（原版 getConst(40)）', armsReady === true && armsItems === 5,
         `${armsItems} 项，出征按钮=${armsReady === true}`);
+
       await tapBtn('#p3-list', "x.dataset.actionId === '27'");         // 出征
       await sleep(300);
       const marchProbe = JSON.parse(await evaluate(`JSON.stringify({
@@ -1303,6 +1323,359 @@ try {
     check('P5 测试7 战略地图已按原版数据重新同步（城市归属仍可读）',
       (await evaluate('window.__P2__.adapter.getCities().length')) === 38);
   }
+
+  // ==================================================================
+  // P6 全局整合：统一状态 / UI 栈 / 存档兼容 / 场景反复切换
+  //   —— 对应任务书「十二」测试 E（存档）与测试 F（场景反复切换）
+  // ==================================================================
+  const p6Probe = async () => JSON.parse(await evaluate(`JSON.stringify((() => {
+    const P = window.__P6__;
+    if (!P) return null;
+    const st = P.manager.getStatus();
+    const rm = window.__P1__ ? window.__P1__.renderManager : null;
+    const ev = window.__P1__ ? window.__P1__.events : null;
+    const cm = window.__P1__ ? window.__P1__.cameraManager : null;
+    // 2D 原版画面（strategy canvas）的重绘计数：读档后原版 qs() 必须重画
+    return {
+      version: P.version,
+      scene: st.scene,
+      lifecycle: st.lifecycle,
+      director: st.director,
+      ui: st.ui,
+      sync: st.sync,
+      saves: st.saves,
+      errors: st.errors,
+      presentation: st.presentation,
+      presentationStats: st.presentationStats,
+      frames: rm ? rm.stats.frames : -1,
+      renders: rm ? rm.stats.renders : -1,
+      running: rm ? rm.isRunning : null,
+      events: ev ? ev.getStats() : null,
+      cams: cm && cm._state ? cm._state.size : -1,
+      domNodes: document.querySelectorAll('*').length,
+      consistency: P.consistency(),
+      lsKeys: Object.keys(localStorage),
+    };
+  })())`));
+
+  const p6Base = await p6Probe();
+  check('P6 整合层就绪：所有启动阶段成功且进入 running（唯一入口）',
+    !!p6Base && p6Base.lifecycle.state === 'running' && p6Base.lifecycle.failed === 0,
+    p6Base
+      ? `${p6Base.lifecycle.stages} 阶段 / ${p6Base.lifecycle.ok} 成功 / 失败 ${p6Base.lifecycle.failed}`
+        + ` / ${p6Base.lifecycle.totalMs}ms / 计时器 ${p6Base.lifecycle.timers}`
+      : 'window.__P6__ 不存在');
+  check('P6 唯一性：渲染循环/事件总线/适配器/场景表各只占一份（无重复初始化）',
+    !!p6Base && p6Base.lifecycle.duplicates === 0
+    && ['loop', 'events', 'adapter', 'scenes', 'renderer'].every((k) => p6Base.lifecycle.singletons.includes(k)),
+    p6Base
+      ? `单例 ${p6Base.lifecycle.singletons.join(',')} / 重复 ${p6Base.lifecycle.duplicates}`
+      : '无');
+  check('P6 状态一致性：城市实例/旗帜归属/选中/场景与战斗自洽且渲染循环在跑',
+    !!p6Base && p6Base.consistency.ok === true && p6Base.running === true,
+    p6Base
+      ? (p6Base.consistency.ok
+        ? `城市 ${p6Base.consistency.detail.cities} 座 / 订阅 ${p6Base.events.subscriptions}`
+        : p6Base.consistency.mismatches.join('；'))
+      : '无');
+
+  // ---------------------------------------------------------------- 测试 E：存档
+  const p6Slots0 = JSON.parse(await evaluate('JSON.stringify(window.__P6__.inspectSlots())'));
+  check('P6 存档槽位来自原版 jn()（3 槽 · key 后缀 0..5，不自行拼 key）',
+    p6Slots0.length === 3
+    && p6Slots0.every((s, i) => s.keys.length === 2
+      && s.keys[0].endsWith(`${2 * i}.sav`) && s.keys[1].endsWith(`${2 * i + 1}.sav`)),
+    p6Slots0.map((s) => `#${s.slot + 1}:${s.keys.map((k) => k.split('.').slice(-2).join('.')).join('+')}`).join(' '));
+  check('P6 战前存档在槽位 3 且与容量公式一致（旧存档可继续读出）',
+    !!(p6Slots0[2] && p6Slots0[2].exists && p6Slots0[2].compatible === true
+      && p6Slots0[2].sizeMatch === true && p6Slots0[2].header.version === 4),
+    p6Slots0[2]
+      ? `${p6Slots0[2].label} / base ${p6Slots0[2].bytes.base}B dyn ${p6Slots0[2].bytes.dyn}B`
+        + ` / 期望 ${p6Slots0[2].expect ? p6Slots0[2].expect.base + '/' + p6Slots0[2].expect.dyn : '?'}`
+      : '无槽位 3');
+
+  // 战斗结束后原版要走完「战报 -> wa() 指令处理 -> Ma() 回合菜单 -> 下一回合 ka()」才回到
+  // 真正的可操作状态。判据不能只看 zs()：wa() 里也有 zs()（选目标），那时 P3 的城市会话
+  // 是关闭的（cityLoop=false），点城市不会开界面。唯一可靠判据是「原版 ka() 城市阶段 + zs() 等待」。
+  const p6ZoneKind = async () => JSON.parse(await evaluate(`JSON.stringify({
+    phase: window.__P2__.adapter.getInputPhase(),
+    cityLoop: window.__P3__ ? window.__P3__.getStatus().cityLoop : null,
+  })`));
+  let p6Nudges = 0;
+  let p6DialogClicks = 0;
+  const p6WaitWorldReady = async (ms, maxNudge = 14) => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const z = await p6ZoneKind();
+      const p = z.phase;
+      // 原版城市阶段正在等选城 = 真正的战略可操作状态
+      if (z.cityLoop === true && p.kind === 'zs' && p.waiting && !p.inOrderContext) {
+        return { phase: p, nudges: p6Nudges, dialogs: p6DialogClicks, cityLoop: true };
+      }
+      // 原版停在 P3 的 HTML 对话框上（提示/情报/战报）：键盘按不动，必须点确定
+      if (await dismissAnyModal()) { p6DialogClicks++; await sleep(300); continue; }
+      if (p.kind === 'ei') {
+        // 误开城市菜单：点返回退出，不执行任何指令
+        await clickEl('#p3-city .p3-head-btns button');
+        await sleep(600);
+        continue;
+      }
+      // 停在原版的等待里（回合菜单/wa() 的选目标）：像玩家一样补一次确认键推进
+      if (p.waiting && p6Nudges < maxNudge) {
+        p6Nudges++;
+        await evaluate('window.__P2__.adapter.sendInput({ type: 5, param: 39 })');
+      }
+      await sleep(600);
+    }
+    return null;
+  };
+  const p6WorldReady = await p6WaitWorldReady(90000);
+  const p6Zs = p6WorldReady ? p6WorldReady.phase : null;
+  let p6Post = null;
+  if (p6Zs) {
+    p6Post = JSON.parse(await evaluate('JSON.stringify(window.__P6__.saveSlot(0, "P6 战后存档"))'));
+  }
+  check('P6 测试E 战斗结束后可存档（原版 ac() 直接写，P6 不碰格式）',
+    !!p6Post && p6Post.ok === true && p6Post.sizeMatch === true,
+    p6Post ? (p6Post.ok
+      ? `槽位 1 · base ${p6Post.bytes.base}B / dyn ${p6Post.bytes.dyn}B · ${p6Post.header.year} 年`
+      : p6Post.reason)
+      : `原版未回到城市阶段（kind=${p6Zs ? p6Zs.kind : '超时'}，nudge=${p6Nudges}）`);
+  check('P6 测试E 存档格式仍是原版 SGB3 + 版本 4（未新增任何 3D 字段）',
+    !!p6Post && p6Post.ok === true && p6Post.header.headerOk === true && p6Post.header.version === 4
+    && p6Post.header.bytes === p6Post.bytes.base,
+    p6Post
+      ? `headerOk=${p6Post.header.headerOk} version=${p6Post.header.version}`
+        + ` 头部字节=${p6Post.header.bytes} / base 片=${p6Post.bytes.base}`
+      : '无');
+
+  // 读档：回到战前存档 -> 原版 oc() + 表现层全量重建
+  const p6Load = JSON.parse(await evaluate('JSON.stringify(window.__P6__.loadSlot(2, "P6 读回战前存档"))'));
+  check('P6 测试E 读档走原版 oc() 并驱动 2D 重绘 + 力同步 + 3D 重建',
+    p6Load.ok === true && p6Load.redrawn === true
+    && !!p6Load.after && p6Load.after.ok === true
+    && p6Load.after.resync && p6Load.after.resync.ok === true,
+    p6Load.ok
+      ? `redrawn=${p6Load.redrawn} cleared=${p6Load.after.cleared} 城市 ${p6Load.after.resync.cities} 座`
+        + ` / 旗帜 ${p6Load.after.resync.flags} 面`
+      : p6Load.reason);
+  await sleep(500);
+  const p6AfterLoad = await p6Probe();
+  const p6YearAfter = await evaluate('window.__P2__.adapter.getGameState().year');
+  check('P6 测试E 读档后场景停在战略地图、年份回到存档时点',
+    p6AfterLoad.scene === 'world' && Number(p6YearAfter) === Number(p6PreBattleSave && p6PreBattleSave.header.year),
+    `scene=${p6AfterLoad.scene} 年 ${p6YearAfter} / 存档 ${p6PreBattleSave ? p6PreBattleSave.header.year : '?'}`);
+  check('P6 测试E 读档后一致性全绿（不存在永久不一致）',
+    p6AfterLoad.consistency.ok === true,
+    p6AfterLoad.consistency.ok
+      ? `城市 ${p6AfterLoad.consistency.detail.cities} 座 / 旗帜 ${p6AfterLoad.consistency.detail.flags} 面`
+        + ` / 订阅 ${p6AfterLoad.events.subscriptions}`
+      : p6AfterLoad.consistency.mismatches.join('；'));
+
+  // 表现配置与存档分离：两套键互不污染
+  const p6PresKeys = p6AfterLoad.lsKeys;
+  const savKeys = p6PresKeys.filter((k) => k.endsWith('.sav'));
+  check('P6 测试E 3D 表现配置独立存储，不混入原版 .sav（存档可被原版读）',
+    p6PresKeys.includes('sgby3d.presentation.v1')
+    && !savKeys.some((k) => k.includes('3d') || k.includes('presentation')),
+    `表现键 ${p6PresKeys.includes('sgby3d.presentation.v1') ? '存在' : '缺失'} / .sav ${savKeys.length} 个`);
+  const p6Audit = JSON.parse(await evaluate(`JSON.stringify(
+    window.__P6__.presentation.constructor.auditPayload(window.__P6__.presentation.get()))`));
+  check('P6 测试E 表现配置载荷不含任何业务字段（只存相机/面板/选中）',
+    p6Audit.ok === true,
+    p6Audit.ok ? `${p6Audit.keys.length} 个键：${p6Audit.keys.join(',')}` : `命中业务字段 ${p6Audit.hits.join(',')}`);
+
+  // ---------------------------------------------------------------- UI 栈
+  const p6StackProbe = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const S = window.__P6__.stack;
+    const before = { depth: S.depth, blocking: S.blocking, peak: S.stats.peakDepth };
+    const t1 = S.push('p6-test-modal', { layer: 60, blocking: true, owner: 'p6-test' });
+    const t2 = S.push('p6-test-modal', { layer: 60, blocking: true, owner: 'p6-test' });
+    const dup = { depth: S.depth, blocking: S.blocking, duplicates: S.stats.duplicates, sameToken: t1 === t2 };
+    S.close(t2);
+    const afterOne = { depth: S.depth, blocking: S.blocking };
+    S.close(t1);
+    const afterAll = { depth: S.depth, blocking: S.blocking };
+    return { before, dup, afterOne, afterAll, ids: S.getStats().ids };
+  })())`));
+  check('P6 UI 栈引用计数：同 id 重复打开不叠层、关一层不解阻断、全关后恢复输入',
+    p6StackProbe.dup.depth === p6StackProbe.before.depth + 1
+    && p6StackProbe.dup.sameToken === true
+    && p6StackProbe.dup.blocking === true
+    && p6StackProbe.afterOne.blocking === true
+    && p6StackProbe.afterOne.depth === p6StackProbe.before.depth + 1
+    && p6StackProbe.afterAll.blocking === p6StackProbe.before.blocking
+    && p6StackProbe.afterAll.depth === p6StackProbe.before.depth
+    && !p6StackProbe.ids.includes('p6-test-modal'),
+    `层 ${p6StackProbe.before.depth}->${p6StackProbe.dup.depth}->${p6StackProbe.afterAll.depth}`
+    + ` 阻断 ${p6StackProbe.before.blocking}->${p6StackProbe.dup.blocking}->${p6StackProbe.afterAll.blocking}`);
+  const p6UiOpen = JSON.parse(await evaluate('JSON.stringify(window.__P6__.uiOpen())'));
+  // 致命面板容器在 mount 时就存在（hidden=true），判据是「未显示且无内容」
+  const p6FatalShown = await evaluate(`(() => {
+    const f = document.getElementById('p6-fatal');
+    return !!f && (!f.hidden || f.querySelectorAll('.p6-fatal-card').length > 0);
+  })()`);
+  check('P6 UI 栈无泄漏：测试结束后没有遗留遮挡层，且未弹出致命错误面板',
+    p6UiOpen.open === 0 && p6UiOpen.fatal === false && p6FatalShown === false,
+    `开口 ${p6UiOpen.open} / 峰值 ${p6UiOpen.stack.peakDepth} / 致命 ${p6UiOpen.fatal}`
+    + ` / 面板显示=${p6FatalShown}`);
+  const p6Err = (await p6Probe()).errors;
+  check('P6 异常分级：全程没有升级为致命错误（可恢复失败不弹致命面板）',
+    p6Err.fatal === 0,
+    `上报 ${p6Err.reports} / 可恢复 ${p6Err.recoverable} / 致命 ${p6Err.fatal} / 已恢复 ${p6Err.recovered}`);
+
+  // ---------------------------------------------------------------- 测试 F：场景反复切换
+  // 候选城：己方所有城，出征用的那座排最前。
+  // 原版规则允许「本月已行动的城」被选中，但会弹一次提示后回到选城（不进菜单），
+  // 所以这里像玩家一样换一座城继续点，而不是死磕同一座。
+  const p6Cities = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const a = window.__P2__.adapter;
+    const me = a.getGameState().playerKing + 1;
+    const list = a.getCities().filter((c) => c.ownerId === me).map((c) => c.id);
+    const pref = ${p4Own ? p4Own.id : 'null'};
+    if (pref !== null) {
+      const at = list.indexOf(pref);
+      if (at >= 0) list.splice(at, 1);
+      list.unshift(pref);
+    }
+    return list;
+  })())`));
+  let p6CityId = p6Cities.length ? p6Cities[0] : null;
+  let p6GoodCity = null;
+  const p6PreRounds = await p6WaitWorldReady(15000);
+  const p6RoundLog = [p6PreRounds
+    ? `就绪(nudge=${p6PreRounds.nudges} 对话框=${p6PreRounds.dialogs})`
+    : '就绪超时'];
+  let p6RoundOk = 0;
+  let p6RoundTries = 0;
+  // 5 轮机会、最多要求 2 轮完整往返：
+  //   原版允许「本月已行动的城」和「非玩家回合」被选中，但都会弹提示或直接回选城，
+  //   不进 ei()/菜单，所以脚本必须换城/等回合并重试 —— 这不是资源泄漏，是原版回合规则。
+  for (let i = 1; i <= 5 && p6CityId !== null && p6RoundOk < 3; i++) {
+    p6RoundTries++;
+    // intent 必须是 'select'：'cursor' 只移动原版光标、不投递确认键（原版 zs() 不会返回城）
+    let openedI = null;
+    let p6Enter = null;
+    let attempt = 0;
+    const order = p6GoodCity !== null
+      ? [p6GoodCity].concat(p6Cities.filter((c) => c !== p6GoodCity))
+      : p6Cities.slice();
+    for (const cand of order) {
+      if (openedI || attempt >= 2) break;
+      attempt++;
+      await dismissAnyModal();     // 先清掉可能挂着的原版提示框，否则确认键会被对话框吃掉
+      p6Enter = JSON.parse(await evaluate(`JSON.stringify((() => {
+        const before = window.__P2__.adapter.getInputPhase();
+        const loop = window.__P3__ ? window.__P3__.getStatus().cityLoop : null;
+        const r = window.__P2__.selectCity(${cand}, { intent: 'select' });
+        return { city: ${cand}, phase: before.kind, canSelect: before.canSelectCity,
+          cityLoop: loop, request: r.request };
+      })())`));
+      // 只要城市界面真的开了就算「进入城市管理」（选中城 ID 单独在明细里标注）
+      // 期间可能弹出原版提示框（Ms/vs），会挡住选城流程，必须点掉才能继续。
+      const openDeadline = Date.now() + 6000;
+      const openSamples = [];
+      while (Date.now() < openDeadline) {
+        const s = JSON.parse(await evaluate(`JSON.stringify({
+          open: window.__P3__.getStatus().open,
+          cityId: window.__P3__.getStatus().cityId,
+          dlg: window.__P3__.getStatus().dialogs.open,
+          modal: document.querySelectorAll('.p3-modal').length,
+          kind: window.__P2__.adapter.getInputPhase().kind,
+        })`));
+        if (s.open) { openedI = await p3Status(); break; }
+        if (openSamples.length < 6) openSamples.push(`o${s.open}/${s.kind}/dlg${s.dlg}/m${s.modal}`);
+        if (await dismissAnyModal()) continue;
+        await sleep(250);
+      }
+      p6Enter.samples = openSamples;
+      if (openedI) p6GoodCity = cand;
+      else await p6WaitWorldReady(6000);      // 没开：把原版推回可操作状态再换城
+    }
+    // P6 的覆盖层登记是 400ms 低频比对（不是每帧），等一拍再读，避免测出「刚开还没登记」
+    if (openedI) await sleep(800);
+    const overlayOpen = await evaluate('!!window.__P6__.director.cityOverlay');
+    if (openedI) {
+      const sameCity = openedI.cityId === (p6Enter ? p6Enter.city : null);
+      await clickEl('#p3-city .p3-head-btns button');            // 返回战略地图
+      const closedI = await waitFor(async () => {
+        const s = await p3Status();
+        return s.open ? null : s;
+      }, 12000, `P6 第${i}轮出城市`).catch(() => null);
+      await sleep(800);      // 同上：覆盖层注销也是 400ms 低频比对
+      const overlayClosed = await evaluate('!window.__P6__.director.cityOverlay');
+      const backZs = await waitFor(async () => {
+        const p = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getInputPhase())'));
+        return p.kind === 'zs' ? p : null;
+      }, 12000, `P6 第${i}轮回 zs`).catch(() => null);
+      if (closedI && overlayClosed && backZs) p6RoundOk++;
+      p6RoundLog.push(`#${i}:in(城#${openedI.cityId}${sameCity ? '' : '≠目标'}`
+        + `${attempt > 1 ? `·第${attempt}次` : ''})${overlayOpen ? '(覆盖层登记)' : '(未登记)'}`
+        + `${closedI ? '/out' : '/×'}${overlayClosed ? '(覆盖层注销)' : '(未注销)'}${backZs ? '/zs' : '/×'}`);
+    } else {
+      const p6FailProbe = JSON.parse(await evaluate(`JSON.stringify({
+        p3: window.__P3__ ? window.__P3__.getStatus() : null,
+        overlay: window.__P6__.director.cityOverlay,
+        cursor: window.__P2__.adapter.getCityCursor(),
+        lastRequest: window.__P2__.interaction.lastRequest,
+        modals: document.querySelectorAll('.p3-modal').length,
+      })`));
+      p6RoundLog.push(`#${i}:进城市超时(phase=${p6Enter.phase} canSelect=${p6Enter.canSelect}`
+        + ` cityLoop=${p6Enter.cityLoop}`
+        + ` injected=${p6Enter.request && p6Enter.request.injected}`
+        + ` reason=${p6Enter.request && p6Enter.request.reason}`
+        + ` / p3open=${p6FailProbe.p3 && p6FailProbe.p3.open}`
+        + ` p3city=${p6FailProbe.p3 && p6FailProbe.p3.cityId}`
+        + ` declines=${p6FailProbe.p3 && p6FailProbe.p3.stats && p6FailProbe.p3.stats.declines}`
+        + ` sessions=${p6FailProbe.p3 && p6FailProbe.p3.stats && p6FailProbe.p3.stats.sessions}`
+        + ` lastWidget=${p6FailProbe.p3 && p6FailProbe.p3.stats && p6FailProbe.p3.stats.lastWidget}`
+        + ` msgs=${p6FailProbe.p3 && p6FailProbe.p3.stats && p6FailProbe.p3.stats.messages}`
+        + ` dlgOpen=${p6FailProbe.p3 && p6FailProbe.p3.dialogs && p6FailProbe.p3.dialogs.open}`
+        + ` dlgDom=${p6FailProbe.modals}`
+        + ` samples=[${(p6Enter.samples || []).join(' ')}]`
+        + ` cursor=${p6FailProbe.cursor && p6FailProbe.cursor.cityId})`);
+    }
+  }
+  check('P6 测试F 战略地图 <-> 城市管理 反复切换（多轮往返全部回到 zs()）',
+    p6RoundOk >= 2,
+    `成功 ${p6RoundOk}/${p6RoundTries} 轮 · ` + p6RoundLog.join(' '));
+  const p6AfterRounds = await p6Probe();
+  check('P6 测试F 反复切换后资源不增长（事件订阅/相机/场景实例）',
+    p6AfterRounds.events.subscriptions === p6Base.events.subscriptions
+    && p6AfterRounds.cams === p6Base.cams,
+    `订阅 ${p6Base.events.subscriptions} -> ${p6AfterRounds.events.subscriptions}`
+    + ` / 相机 ${p6Base.cams} -> ${p6AfterRounds.cams}`);
+  check('P6 测试F 反复切换后 DOM 不膨胀、渲染循环仍在推进',
+    p6AfterRounds.domNodes - p6Base.domNodes <= 40
+    && p6AfterRounds.frames > p6Base.frames && p6AfterRounds.running === true,
+    `DOM ${p6Base.domNodes} -> ${p6AfterRounds.domNodes}`
+    + ` / 帧 ${p6Base.frames} -> ${p6AfterRounds.frames}`);
+  const p6OpensDelta = p6AfterRounds.director.cityOpens - p6Base.director.cityOpens;
+  const p6ClosesDelta = p6AfterRounds.director.cityCloses - p6Base.director.cityCloses;
+  check('P6 测试F 城市覆盖层来回切换已计入编排统计（本轮 3 开 3 关成对）',
+    p6OpensDelta === p6RoundOk && p6ClosesDelta === p6RoundOk,
+    `本轮开 ${p6OpensDelta} / 关 ${p6ClosesDelta}（累计 开 ${p6AfterRounds.director.cityOpens}`
+    + ` / 关 ${p6AfterRounds.director.cityCloses}）`
+    + ` / 战斗进出 ${p6AfterRounds.director.battleEnters}/${p6AfterRounds.director.battleExits}`);
+
+  // 非法切换必须被拒绝且不破坏当前场景（防黑屏）
+  const p6Reject = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const d = window.__P6__.director;
+    const before = { scene: window.__P2__.scenes.currentId, rejected: d.stats.rejected };
+    let thrown = null;
+    try { d.switchTo('world', { reason: 'P6 非法切换测试' }); } catch (e) { thrown = e.message; }
+    return { before, thrown, after: { scene: window.__P2__.scenes.currentId, rejected: d.stats.rejected } };
+  })())`));
+  check('P6 场景切换守卫：非法切换被拒绝、当前场景不变（不会黑屏）',
+    p6Reject.thrown !== null && p6Reject.after.scene === 'world'
+    && p6Reject.after.rejected === p6Reject.before.rejected + 1,
+    `拒绝 ${p6Reject.thrown}`);
+  const p6Final = await p6Probe();
+  check('P6 收尾：全部测试后仍一致、无遗留遮挡层、无致命错误',
+    p6Final.consistency.ok === true && p6Final.ui.open === 0 && p6Final.errors.fatal === 0
+    && p6Final.scene === 'world',
+    `scene=${p6Final.scene} 一致=${p6Final.consistency.ok} UI=${p6Final.ui.open} 致命=${p6Final.errors.fatal}`
+    + (p6Final.consistency.ok ? '' : ' · ' + p6Final.consistency.mismatches.join('；')));
 
   const diag = await evaluate(`JSON.stringify({
     statusText: document.getElementById('status-text')?.textContent || '',

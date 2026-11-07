@@ -353,7 +353,8 @@ test('桥接导出 p5.battle 常量、界面字符串下标与结束标志语义
   assert.ok(bridge.includes('up: w, down: m, left: p, right: b, confirm: C, cancel: k'));
   assert.ok(bridge.includes('tilePx: Pe, tilePy: Ce, viewCols: pe, viewRows: be'));
   assert.ok(bridge.includes('battleOver: Object.freeze({ none: 0, win: 1, lose: 2 })'));
-  assert.ok(bridge.includes("version: '5.0.0-p5'"));
+  // P6 追加存档导出后版本号前推；断言「存在 p4/p5/p6 及以上的版本标注」
+  assert.ok(/version: '([5-9]|1\d)\.\d+\.\d+-p([4-9]|\d\d)'/.test(bridge), '桥接版本标注缺失');
 });
 
 test('内核源码 sgby.min.js 仍未被改写', () => {
