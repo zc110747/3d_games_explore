@@ -39,6 +39,7 @@ export class CityRenderer {
     this._byId = new Map();
     this._labels = new Map();
     this._selected = null;
+    this._hover = null;          // P7：悬停城市（纯表现，不参与任何判断）
     this._flagRenderer = null;
     this._elapsed = 0;
     this._avoidAccum = 0;
@@ -184,10 +185,26 @@ export class CityRenderer {
     if (!rec || !this._body) return;
     const color = cityId === this._selected
       ? C.selectedRingColor
-      : (STATE_COLORS[rec.state] ?? STATE_COLORS[0]);
+      : (cityId === this._hover ? C.hoverColor : (STATE_COLORS[rec.state] ?? STATE_COLORS[0]));
     this._body.setColorAt(rec.index, new this.THREE.Color(color));
     if (this._body.instanceColor) this._body.instanceColor.needsUpdate = true;
   }
+
+  /**
+   * P7：悬停反馈（纯表现）。
+   * 只改 instanceColor 与画布光标，不改变选中态、不发任何游戏事件。
+   */
+  setHover(cityId) {
+    const next = (cityId === null || cityId === undefined || cityId === this._selected) ? null : cityId;
+    if (next === this._hover) return this._hover;
+    const prev = this._hover;
+    this._hover = next;
+    if (prev !== null) this._applyBodyColor(prev);
+    if (next !== null) this._applyBodyColor(next);
+    return this._hover;
+  }
+
+  get hover() { return this._hover; }
 
   /** 增量刷新单城（状态/归属/名称变化时不重建整张地图）。 */
   refreshCity(cityId) {
@@ -231,8 +248,11 @@ export class CityRenderer {
     this._selected = cityId;
     if (cityId === null || !this._byId.has(cityId)) {
       this._ring.visible = false;
+      // 选中被清空后，旧悬停色要按新状态重刷一次
+      if (this._hover !== null) this._applyBodyColor(this._hover);
       return false;
     }
+    if (this._hover === cityId) this._hover = null;   // 悬停城市被选中：交给选中色
     const rec = this._byId.get(cityId);
     this._ring.position.set(rec.world.x, 0.03, rec.world.z);
     this._ring.visible = true;
@@ -330,6 +350,7 @@ export class CityRenderer {
       labelVisibility: this._labelStats || null,
       pickables: this.getPickables().length,
       selected: this._selected,
+      hover: this._hover,
       stateHistogram: this.cities.reduce((m, c) => {
         m[c.state] = (m[c.state] || 0) + 1; return m;
       }, {}),

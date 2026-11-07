@@ -9,7 +9,7 @@
  */
 import { INPUT_CONFIG } from './config.mjs';
 
-const TYPES = new Set(['pointerdown', 'pointermove', 'pointerup', 'click', 'drag', 'wheel', 'keydown', 'keyup']);
+const TYPES = new Set(['pointerdown', 'pointermove', 'pointerup', 'pointerleave', 'click', 'drag', 'wheel', 'keydown', 'keyup']);
 
 export class InputManager {
   constructor({ container, config = INPUT_CONFIG }) {
@@ -107,6 +107,8 @@ export class InputManager {
         this._down = null; this._last = null; this._dragging = false;
       },
       cancel: () => { this._down = null; this._last = null; this._dragging = false; },
+      // P7：指针离开画布（例如移到 HTML 面板上）要显式通知，否则悬停高亮会一直留着
+      leave: () => { this._down = null; this._last = null; this._dragging = false; this._emit('pointerleave', {}); },
       wheel: (e) => {
         if (this._blocked(e)) return;
         e.preventDefault();                 // 只作用于 3D 画布
@@ -126,6 +128,7 @@ export class InputManager {
     c.addEventListener('pointermove', this._h.move);
     c.addEventListener('pointerup', this._h.up);
     c.addEventListener('pointercancel', this._h.cancel);
+    c.addEventListener('pointerleave', this._h.leave);
     c.addEventListener('wheel', this._h.wheel, { passive: false });
     c.addEventListener('contextmenu', this._h.contextmenu);
     window.addEventListener('keydown', this._h.keydown);
@@ -140,6 +143,7 @@ export class InputManager {
     c.removeEventListener('pointermove', h.move);
     c.removeEventListener('pointerup', h.up);
     c.removeEventListener('pointercancel', h.cancel);
+    c.removeEventListener('pointerleave', h.leave);
     c.removeEventListener('wheel', h.wheel);
     c.removeEventListener('contextmenu', h.contextmenu);
     window.removeEventListener('keydown', h.keydown);

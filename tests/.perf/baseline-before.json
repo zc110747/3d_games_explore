@@ -1,0 +1,234 @@
+{
+  "label": "baseline-before",
+  "at": "2026-11-07T02:20:13.247Z",
+  "env": {
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0",
+    "dpr": 1,
+    "viewport": [
+      1570,
+      758
+    ],
+    "gl": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+    "threads": 20,
+    "memory": {
+      "limitMB": 4192
+    },
+    "three": "0.187.0",
+    "mode": "swiftshader"
+  },
+  "scenarios": {
+    "idleWorld": {
+      "frames": 357,
+      "fps": 59.67,
+      "meanMs": 16.76,
+      "p50Ms": 16.7,
+      "p95Ms": 16.7,
+      "p99Ms": 16.8,
+      "maxMs": 33.4,
+      "jitterMs": 1.25,
+      "frameCost": {
+        "n": 20,
+        "medianMs": 0.1,
+        "p95Ms": 0.2,
+        "maxMs": 0.5
+      },
+      "tex": {
+        "available": true,
+        "count": 40,
+        "mb": 6.21
+      },
+      "info": {
+        "scene": "world",
+        "drawCalls": 88,
+        "triangles": 13046,
+        "lines": 0,
+        "points": 0,
+        "geometries": 10,
+        "textures": 40,
+        "programs": 11,
+        "pixelRatio": 1,
+        "canvas": [
+          1570,
+          724
+        ],
+        "mem": {
+          "usedMB": 63.49,
+          "totalMB": 70.49
+        },
+        "dom": 346,
+        "events": 30
+      }
+    },
+    "stressWorld": {
+      "frames": 351,
+      "fps": 58.18,
+      "meanMs": 17.19,
+      "p50Ms": 16.7,
+      "p95Ms": 16.8,
+      "p99Ms": 16.8,
+      "maxMs": 116.6,
+      "jitterMs": 6.93,
+      "events": 0,
+      "info": {
+        "scene": "world",
+        "drawCalls": 50,
+        "triangles": 12970,
+        "lines": 0,
+        "points": 0,
+        "geometries": 10,
+        "textures": 40,
+        "programs": 11,
+        "pixelRatio": 1,
+        "canvas": [
+          1570,
+          724
+        ],
+        "mem": {
+          "usedMB": 63.93,
+          "totalMB": 70.56
+        },
+        "dom": 346,
+        "events": 30
+      }
+    },
+    "switch": {
+      "toBattle": {
+        "id": "battle",
+        "buildMs": 2,
+        "firstFrameMs": 156
+      },
+      "toWorld": {
+        "id": "world",
+        "buildMs": 2,
+        "firstFrameMs": 155
+      },
+      "battleIdle": {
+        "frames": 180,
+        "fps": 59.99,
+        "meanMs": 16.67,
+        "p50Ms": 16.7,
+        "p95Ms": 16.7,
+        "p99Ms": 16.8,
+        "maxMs": 16.9,
+        "jitterMs": 0.06,
+        "frameCost": {
+          "n": 20,
+          "medianMs": 0,
+          "p95Ms": 0.1,
+          "maxMs": 0.1
+        },
+        "tex": {
+          "available": true,
+          "count": 0,
+          "mb": 0
+        },
+        "info": {
+          "scene": "battle",
+          "drawCalls": 0,
+          "triangles": 0,
+          "lines": 0,
+          "points": 0,
+          "geometries": 10,
+          "textures": 40,
+          "programs": 11,
+          "pixelRatio": 1,
+          "canvas": [
+            1570,
+            724
+          ],
+          "mem": {
+            "usedMB": 61.52,
+            "totalMB": 69.81
+          },
+          "dom": 346,
+          "events": 32
+        }
+      }
+    },
+    "dpr2World": {
+      "frames": 96,
+      "fps": 24.2,
+      "meanMs": 41.32,
+      "p50Ms": 33.4,
+      "p95Ms": 50.1,
+      "p99Ms": 66.6,
+      "maxMs": 83.3,
+      "jitterMs": 10.2,
+      "frameCost": {
+        "n": 20,
+        "medianMs": 0.1,
+        "p95Ms": 0.1,
+        "maxMs": 0.3
+      },
+      "info": {
+        "scene": "world",
+        "drawCalls": 50,
+        "triangles": 12970,
+        "lines": 0,
+        "points": 0,
+        "geometries": 10,
+        "textures": 40,
+        "programs": 11,
+        "pixelRatio": 2,
+        "canvas": [
+          1600,
+          900
+        ],
+        "mem": {
+          "usedMB": 76.88,
+          "totalMB": 85.12
+        },
+        "dom": 346,
+        "events": 37
+      }
+    }
+  },
+  "soak": [
+    {
+      "t": 5,
+      "geometries": 10,
+      "textures": 40,
+      "programs": 11,
+      "usedMB": 77.1,
+      "dom": 346,
+      "events": 37
+    },
+    {
+      "t": 10,
+      "geometries": 10,
+      "textures": 40,
+      "programs": 11,
+      "usedMB": 76.2,
+      "dom": 346,
+      "events": 37
+    },
+    {
+      "t": 15,
+      "geometries": 10,
+      "textures": 40,
+      "programs": 11,
+      "usedMB": 75.24,
+      "dom": 346,
+      "events": 37
+    },
+    {
+      "t": 20,
+      "geometries": 10,
+      "textures": 40,
+      "programs": 11,
+      "usedMB": 77.48,
+      "dom": 346,
+      "events": 37
+    }
+  ],
+  "notes": [],
+  "growth": {
+    "geometries": 0,
+    "textures": 0,
+    "usedMB": 0.38,
+    "dom": 0,
+    "events": 0
+  },
+  "p7": null,
+  "exceptions": 0
+}

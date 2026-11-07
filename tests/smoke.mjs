@@ -880,6 +880,17 @@ try {
       check('HUD 显示真实部队名/兵种', hudUnit.includes(ally.name) && hudUnit.includes(ally.armsTypeName),
         hudUnit.slice(0, 60));
 
+      // ---- P7 战斗性能实测：真实战斗地图（1024 格 + 20 槽部队 + 范围覆盖层）下的帧时间与 draw call
+      await sleep(1500);
+      const p7BattlePerf = JSON.parse(await evaluate(
+        'JSON.stringify({ frame: window.__P7__.frameStats(), info: window.__P7__.rendererInfo() })'));
+      check('P7 战斗场景实测：真实战斗渲染有 draw call，且同环境帧率达标（>= 30fps）',
+        p7BattlePerf.info.drawCalls > 0 && p7BattlePerf.info.triangles > 0
+        && p7BattlePerf.frame.samples > 0 && p7BattlePerf.frame.fps >= 30,
+        `${p7BattlePerf.frame.fps}fps · mean ${p7BattlePerf.frame.meanMs}ms · p95 ${p7BattlePerf.frame.p95Ms}ms`
+        + ` · draws ${p7BattlePerf.info.drawCalls} · tris ${p7BattlePerf.info.triangles}`
+        + ` · geo ${p7BattlePerf.info.geometries} · tex ${p7BattlePerf.info.textures}`);
+
       // ---- 进战斗时相机自动取景：所有在场部队都应落在可视区内
       const inView = JSON.parse(await evaluate(`JSON.stringify((() => {
         const vp = ${JSON.stringify(stageRect)};
@@ -1676,6 +1687,217 @@ try {
     && p6Final.scene === 'world',
     `scene=${p6Final.scene} 一致=${p6Final.consistency.ok} UI=${p6Final.ui.open} 致命=${p6Final.errors.fatal}`
     + (p6Final.consistency.ok ? '' : ' · ' + p6Final.consistency.mismatches.join('；')));
+
+  // ================================================================
+  // P7 最终验收：性能 / 一致性 / 稳定性 / 高 DPI / 长跑
+  // ================================================================
+  const p7Ready = await evaluate('!!window.__P7__');
+  check('P7 调试入口就绪（性能读数 / 一致性探针 / 上下文恢复）', p7Ready === true);
+
+  const p7Rep = JSON.parse(await evaluate('JSON.stringify(window.__P7__.perfReport())'));
+  check('P7 性能报告口径齐全（帧时间 / CPU / DrawCall / 资源 / 内存 / 长跑）',
+    !!p7Rep.frame && !!p7Rep.renderer && !!p7Rep.memory && !!p7Rep.gpu && !!p7Rep.longRun
+    && p7Rep.frame.samples > 0 && p7Rep.renderer.drawCalls > 0,
+    `${p7Rep.frame.fps}fps · mean ${p7Rep.frame.meanMs}ms · draws ${p7Rep.renderer.drawCalls}`
+    + ` · tris ${p7Rep.renderer.triangles} · geo ${p7Rep.renderer.geometries} · tex ${p7Rep.renderer.textures}`);
+  check('P7 帧时间统计自洽（p50<=p95<=p99<=max，CPU 耗时不超过一帧）',
+    p7Rep.frame.p50Ms <= p7Rep.frame.p95Ms && p7Rep.frame.p95Ms <= p7Rep.frame.p99Ms
+    && p7Rep.frame.p99Ms <= p7Rep.frame.maxMs
+    && p7Rep.frame.busyMeanMs <= p7Rep.frame.meanMs,
+    `p50 ${p7Rep.frame.p50Ms} / p95 ${p7Rep.frame.p95Ms} / p99 ${p7Rep.frame.p99Ms}`
+    + ` / max ${p7Rep.frame.maxMs} / CPU ${p7Rep.frame.busyMeanMs}`);
+  check('P7 浏览器不暴露的指标如实标注（GPU 时间 / 显存不编造）',
+    p7Rep.gpu.measurable === false && !!p7Rep.gpu.reason
+    && (p7Rep.memory.available === true || typeof p7Rep.memory.reason === 'string'),
+    `GPU 不可测${p7Rep.gpu.extensionPresent ? '（有 EXT 未使用）' : '（无 EXT）'}`
+    + ` / 堆 ${p7Rep.memory.available ? p7Rep.memory.usedMB + 'MB' : '不可测'}`);
+
+  // ---- 原版一致性探针（浏览器真实数据，独立于 Node 夹具）
+  const p7Fp0 = await evaluate('JSON.stringify(window.__P7__.stateFingerprint())');
+  const p7Cons = JSON.parse(await evaluate('JSON.stringify(window.__P7__.consistency())'));
+  const p7Fp1 = await evaluate('JSON.stringify(window.__P7__.stateFingerprint())');
+  check('P7 原版一致性探针全绿（城市 38 / 连接 54 / 势力 / 武将 / 坐标往返）',
+    p7Cons.ok === true && p7Cons.total >= 15 && p7Cons.counts.cities === 38,
+    `${p7Cons.passed}/${p7Cons.total} 项 · ${p7Cons.counts.cities} 城 / ${p7Cons.counts.officers} 将`
+    + (p7Cons.ok ? '' : ' · ' + p7Cons.failures.map((f) => `${f.name}:${f.detail}`).join('；')));
+  check('P7 一致性探针只读（跑完整套后 Dn 指纹不变，年份/城市/兵力一致）',
+    p7Fp0 === p7Fp1, p7Fp0 === p7Fp1 ? '指纹一致' : '指纹变化（探针写了游戏状态？）');
+
+  // ---- WebGL 上下文丢失 / 恢复（真实 WEBGL_lose_context，不是模拟事件）
+  const p7Frames0 = await evaluate('window.__P1__.renderManager.stats.frames');
+  const p7Renders0 = await evaluate('window.__P1__.renderManager.stats.renders');
+  const p7Lost = JSON.parse(await evaluate('JSON.stringify(window.__P7__.loseContext())'));
+  const p7LostSeen = await waitFor(async () => {
+    const s = await evaluate('JSON.stringify({ lost: window.__P1__.renderManager.contextLost,'
+      + ' renders: window.__P1__.renderManager.stats.renders,'
+      + ' skip: window.__P1__.renderManager.stats.skipped, losses: window.__P1__.renderManager.stats.contextLosses })');
+    const v = JSON.parse(s);
+    return v.lost === true ? v : null;
+  }, 8000, 'P7 上下文丢失').catch(() => null);
+  await sleep(700);
+  const p7SkipDuringLost = await evaluate('window.__P1__.renderManager.stats.skipped');
+  // 丢失事件是异步派发的，所以在「观测到丢失」之后再取渲染基线，避免把事件延迟期间的正常帧算成失败
+  const p7RendersDuringLost = await evaluate('window.__P1__.renderManager.stats.renders');
+  check('P7 上下文丢失被检测并向失效上下文停止提交绘制（renders 不再增长）',
+    p7Lost.ok === true && !!p7LostSeen && p7SkipDuringLost > 0
+    && p7RendersDuringLost === p7LostSeen.renders,
+    p7LostSeen
+      ? `丢失=${p7LostSeen.lost} · 跳过绘制 ${p7SkipDuringLost} 帧`
+        + ` · renders ${p7Renders0} -> ${p7LostSeen.renders}（丢失生效）-> ${p7RendersDuringLost}（700ms 后）`
+      : `未检测到丢失（${p7Lost.reason || ''}）`);
+
+  const p7FpLost = await evaluate('JSON.stringify(window.__P7__.stateFingerprint())');
+  const p7Restored = JSON.parse(await evaluate('JSON.stringify(window.__P7__.restoreContext())'));
+  const p7Recovered = await waitFor(async () => {
+    const v = JSON.parse(await evaluate('JSON.stringify({ lost: window.__P1__.renderManager.contextLost,'
+      + ' frames: window.__P1__.renderManager.stats.frames, renders: window.__P1__.renderManager.stats.renders,'
+      + ' restores: window.__P1__.renderManager.stats.contextRestores })'));
+    // 真正恢复的判据是「又开始提交绘制了」：renders 要显著增长，不能靠丢失前那两帧蒙过去
+    return (v.lost === false && v.restores > 0 && v.renders >= p7RendersDuringLost + 10) ? v : null;
+  }, 15000, 'P7 上下文恢复').catch(() => null);
+  const p7Fp2 = await evaluate('JSON.stringify(window.__P7__.stateFingerprint())');
+  // 致命面板元素在 UIManager 初始化时就常驻 DOM，只能用「是否可见」判断
+  const p7FatalAfter = await evaluate('window.__P6__.ui.getStatus().fatal');
+  check('P7 上下文恢复：恢复后继续提交绘制、业务状态未被重置、无致命面板',
+    p7Restored.ok === true && !!p7Recovered && p7Fp2 === p7FpLost && p7FatalAfter === false,
+    p7Recovered
+      ? `恢复 ${p7Recovered.restores} 次 / renders ${p7RendersDuringLost} -> ${p7Recovered.renders}`
+        + ` / 状态一致=${p7Fp2 === p7FpLost} / 致命面板=${p7FatalAfter}`
+      : `未恢复（${p7Restored.reason || '超时'}）`);
+
+  // ---- 快速重复点击 / 快速切换选中（动画期间重复输入）
+  const p7Rapid = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const a = window.__P2__.adapter;
+    const me = a.getGameState().playerKing + 1;
+    const mine = a.getCities().filter((c) => c.ownerId === me);
+    const target = (mine[0] || a.getCities()[0]).id;
+    const errs = [];
+    let accepted = 0;
+    for (let i = 0; i < 10; i++) {
+      try {
+        const r = window.__P2__.selectCity(target, { intent: 'cursor' });
+        if (r && r.request) accepted++;
+      } catch (e) { errs.push(e.message); }
+    }
+    return { target, accepted, errs: errs.slice(0, 3), selected: window.__P2__.interaction.selectedCityId,
+      ui: window.__P6__.uiOpen(), consistency: window.__P6__.consistency().ok };
+  })())`));
+  check('P7 快速重复点击同一城市 10 次：无异常、选中一致、UI 栈不泄漏',
+    p7Rapid.errs.length === 0 && p7Rapid.selected === p7Rapid.target
+    && p7Rapid.ui.open === 0 && p7Rapid.consistency === true,
+    `#${p7Rapid.target} 接受 ${p7Rapid.accepted}/10 · 异常 ${p7Rapid.errs.length}`
+    + ` · 选中 ${p7Rapid.selected} · UI ${p7Rapid.ui.open}`);
+  // 误开城市菜单时退出，恢复战略状态
+  await evaluate(`(() => { const s = window.__P3__ ? window.__P3__.getStatus() : null;
+    if (s && s.open) { const b = document.querySelector('#p3-city .p3-head-btns button'); if (b) b.click(); }
+    return true; })()`);
+  await sleep(800);
+
+  // ---- 高 DPI：dpr 变化要让画布像素跟着变，但绝不动逻辑数据
+  const p7Logic0 = await evaluate('JSON.stringify(window.__P2__.adapter.getCity(0).position)');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 900, deviceScaleFactor: 2, mobile: false });
+  const p7Dpr2 = await waitFor(async () => {
+    const v = JSON.parse(await evaluate(`JSON.stringify((() => {
+      const rm = window.__P1__.renderManager;
+      const g = rm.getInfo();
+      return { dpr: g.pixelRatio, cap: g.pixelRatioCap, size: g.size,
+        buffer: [rm.canvas.width, rm.canvas.height],
+        css: [window.innerWidth, window.innerHeight], devicePixelRatio: window.devicePixelRatio };
+    })())`));
+    return v.devicePixelRatio === 2 && v.dpr >= 1.99 ? v : null;
+  }, 8000, 'P7 进入 dpr=2').catch(() => null);
+  const p7Logic1 = await evaluate('JSON.stringify(window.__P2__.adapter.getCity(0).position)');
+  // 断言对象必须是**画布后备缓冲**（canvas.width），renderer.getSize() 返回的是 CSS 逻辑尺寸
+  check('P7 高 DPI：画布后备缓冲 = CSS 尺寸 × 像素比，逻辑坐标不受影响',
+    !!p7Dpr2 && p7Dpr2.buffer[0] === Math.round(p7Dpr2.css[0] * p7Dpr2.dpr)
+    && p7Dpr2.buffer[1] === Math.round(p7Dpr2.css[1] * p7Dpr2.dpr)
+    && p7Logic0 === p7Logic1,
+    p7Dpr2 ? `像素比 ${p7Dpr2.dpr}（上限 ${p7Dpr2.cap}）后备缓冲 ${p7Dpr2.buffer.join('×')}`
+      + ` / CSS ${p7Dpr2.css.join('×')} / 逻辑坐标未变=${p7Logic0 === p7Logic1}` : '未切换到 dpr=2');
+
+  // 自适应分辨率必须收敛：要么保持 2（撑得住），要么降到 >=1（撑不住就降，但不糊到 1 以下）
+  const p7Adaptive = await waitFor(async () => {
+    const v = JSON.parse(await evaluate('JSON.stringify(window.__P7__.adaptiveStatus())'));
+    return (v.evaluations > 0 && (v.downshifts > 0 || v.cap >= 1.99)) ? v : null;
+  }, 25000, 'P7 自适应分辨率收敛').catch(() => null);
+  check('P7 自适应分辨率：高 DPI 下按帧时间决策，且不低于 1 倍像素',
+    !!p7Adaptive && p7Adaptive.cap >= 1 - 1e-6 && p7Adaptive.cap <= 2 + 1e-6
+    && p7Adaptive.evaluations > 0,
+    p7Adaptive
+      ? `cap ${p7Adaptive.cap}（设备 ${p7Adaptive.devicePixelRatio}）评估 ${p7Adaptive.evaluations} 次`
+        + ` 降档 ${p7Adaptive.downshifts} 升档 ${p7Adaptive.upshifts} · ${p7Adaptive.lastReason}`
+      : '自适应未产出决策');
+
+  await send('Emulation.clearDeviceMetricsOverride');
+  await sleep(900);
+  const p7Back = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const g = window.__P1__.renderManager.getInfo();
+    return { dpr: g.pixelRatio, devicePixelRatio: window.devicePixelRatio, frames: g.frames };
+  })())`));
+  check('P7 退出高 DPI：像素比回到设备值，渲染循环未中断',
+    p7Back.dpr === p7Back.devicePixelRatio && p7Back.frames > p7Frames0,
+    `dpr ${p7Back.dpr} / 设备 ${p7Back.devicePixelRatio} / frames ${p7Back.frames}`);
+
+  // ---- 动画看门狗（P5 已有超时兜底）：战斗退出后不得残留未完成动画/输入锁
+  const p7Anim = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const ops = window.__P5__;
+    const a = ops && ops.getSnapshot().anim ? ops.getSnapshot().anim : null;
+    const f = ops && ops.flow ? ops.flow.getSnapshot() : null;
+    return { anim: a, flow: f, battle: window.__P4__ ? window.__P4__.getStatus().active : null };
+  })())`));
+  check('P7 动画与输入锁未残留（战斗退出后 pending=0，无卡死的动画）',
+    (!p7Anim.battle || (p7Anim.anim && p7Anim.anim.pending === 0))
+    && (!p7Anim.flow || p7Anim.flow.pendingInputs === 0),
+    p7Anim.anim
+      ? `动画 pending ${p7Anim.anim.pending} / 超时 ${p7Anim.anim.timedOut} / 输入队列 ${p7Anim.flow ? p7Anim.flow.pendingInputs : '-'}`
+      : '战斗未激活（无动画可残留）');
+
+  // ---- 长跑：45 秒持续运行，资源/订阅/DOM 不得持续增长
+  const p7Soak0 = JSON.parse(await evaluate(`JSON.stringify({
+    geometries: window.__P1__.renderManager.getInfo().geometries,
+    textures: window.__P1__.renderManager.getInfo().textures,
+    programs: window.__P1__.renderManager.getInfo().programs,
+    events: window.__P1__.getStatus().events.subscriptions,
+    dom: document.querySelectorAll('*').length,
+    frames: window.__P1__.renderManager.stats.frames,
+    heap: window.__P7__.perfReport().memory.available ? window.__P7__.perfReport().memory.usedMB : null,
+  })`));
+  const p7SoakLog = [];
+  for (let i = 0; i < 9; i++) {
+    await sleep(5000);
+    const s = JSON.parse(await evaluate(`JSON.stringify({
+      geometries: window.__P1__.renderManager.getInfo().geometries,
+      textures: window.__P1__.renderManager.getInfo().textures,
+      programs: window.__P1__.renderManager.getInfo().programs,
+      events: window.__P1__.getStatus().events.subscriptions,
+      dom: document.querySelectorAll('*').length,
+      frames: window.__P1__.renderManager.stats.frames,
+      heap: window.__P7__.perfReport().memory.available ? window.__P7__.perfReport().memory.usedMB : null,
+    })`));
+    p7SoakLog.push(s);
+  }
+  const p7SoakEnd = p7SoakLog[p7SoakLog.length - 1];
+  const p7HeapMax = p7SoakLog.reduce((m, x) => (x.heap == null ? m : Math.max(m, x.heap)), p7Soak0.heap || 0);
+  const p7HeapMin = p7SoakLog.reduce((m, x) => (x.heap == null ? m : Math.min(m, x.heap)), p7Soak0.heap || 0);
+  check('P7 长跑 45s：几何/纹理/着色器零增长，事件订阅零增长',
+    p7SoakEnd.geometries <= p7Soak0.geometries && p7SoakEnd.textures <= p7Soak0.textures
+    && p7SoakEnd.programs <= p7Soak0.programs && p7SoakEnd.events === p7Soak0.events,
+    `geo ${p7Soak0.geometries}->${p7SoakEnd.geometries} · tex ${p7Soak0.textures}->${p7SoakEnd.textures}`
+    + ` · prog ${p7Soak0.programs}->${p7SoakEnd.programs} · 订阅 ${p7Soak0.events}->${p7SoakEnd.events}`);
+  const p7SoakFatal = await evaluate('window.__P6__.ui.getStatus().fatal');
+  check('P7 长跑 45s：DOM 不膨胀、渲染循环持续推进、无致命面板',
+    p7SoakEnd.dom - p7Soak0.dom <= 20 && p7SoakEnd.frames > p7Soak0.frames
+    && p7SoakFatal === false,
+    `DOM ${p7Soak0.dom}->${p7SoakEnd.dom} · 帧 ${p7Soak0.frames}->${p7SoakEnd.frames}`
+    + ` · 致命面板=${p7SoakFatal}`);
+  check('P7 长跑 45s：JS 堆在合理范围（无持续攀升）',
+    p7Soak0.heap == null || (p7HeapMax - p7HeapMin) < 30,
+    p7Soak0.heap == null ? '该环境不提供 performance.memory（如实跳过）'
+      : `堆 ${p7HeapMin.toFixed(1)}~${p7HeapMax.toFixed(1)}MB（波动 ${(p7HeapMax - p7HeapMin).toFixed(1)}MB）`);
+  const p7SoakFinal = JSON.parse(await evaluate('JSON.stringify(window.__P7__.perfReport())'));
+  check('P7 长跑后帧率仍达标（同环境下 >= 40fps）',
+    p7SoakFinal.frame.fps >= 40,
+    `${p7SoakFinal.frame.fps}fps · p95 ${p7SoakFinal.frame.p95Ms}ms · 掉帧 ${p7SoakFinal.frame.dropped}`);
 
   const diag = await evaluate(`JSON.stringify({
     statusText: document.getElementById('status-text')?.textContent || '',

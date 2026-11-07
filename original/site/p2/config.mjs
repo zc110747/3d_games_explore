@@ -62,6 +62,7 @@ export const CITY_MODEL_CONFIG = Object.freeze({
   pickHeight: 0.02,
   selectedRingRadius: 0.47,
   selectedRingColor: 0xffd76a,
+  hoverColor: 0xfff4d2,       // P7：悬停时城廓提亮（只改 instanceColor，不改逻辑）
   normalColor: 0xb9a98b,
   source: '统一模型；原版无城市等级/规模字段，故不做差异化（P2 §6.3）',
 });

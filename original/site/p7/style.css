@@ -1,0 +1,49 @@
+/* P7 最终验收层 —— 紧凑性能看板（只读诊断，不承载任何游戏操作）
+   沿用 P2~P6 的暗色 + 金色描边语汇，不引入新色系、不加动效干扰操作。
+   铁律同 P3/P6：根容器 pointer-events:none，只有真正可见的部件 auto 且挂 data-p1-ui-block。 */
+
+#p7-perf {
+  position: absolute;
+  right: 14px;
+  bottom: 120px;
+  width: 208px;
+  padding: 10px 12px 8px;
+  border-radius: 10px;
+  background: rgba(14, 12, 9, .88);
+  border: 1px solid rgba(200, 160, 90, .38);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .55);
+  color: #eadcc0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+#p7-perf[hidden] { display: none; }
+
+#p7-perf h2 {
+  margin: 0 0 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  color: #e8c882;
+}
+
+#p7-perf dl {
+  display: grid;
+  grid-template-columns: 62px 1fr;
+  gap: 2px 8px;
+  margin: 0;
+}
+
+#p7-perf dt { color: #a99a7d; }
+#p7-perf dd { margin: 0; color: #f0e6cf; font-variant-numeric: tabular-nums; }
+
+#p7-perf .p7-note {
+  margin: 6px 0 0;
+  color: #8d8471;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.p7-good { color: #bfe8c6; }
+.p7-warn { color: #f0d79a; }
+.p7-bad { color: #ffb4a2; }

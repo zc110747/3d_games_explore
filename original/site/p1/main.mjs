@@ -33,6 +33,11 @@ import { AppLifecycle } from '../p6/AppLifecycle.mjs';
 import { createIntegration } from '../p6/boot.mjs';
 import { P6_VERSION } from '../p6/config.mjs';
 import { PresentationStore } from '../p6/PresentationStore.mjs';
+// P7：性能观测 / 自适应分辨率 / 原版一致性校验（全部只读，不写游戏状态）
+import { PerfMonitor } from '../p7/PerfMonitor.mjs';
+import { AdaptiveResolution } from '../p7/AdaptiveResolution.mjs';
+import { ConsistencyProbe } from '../p7/ConsistencyProbe.mjs';
+import { P7_VERSION, CONTEXT_LOST_CONFIG, ADAPTIVE_CONFIG } from '../p7/config.mjs';
 
 const $ = (id) => document.getElementById(id);
 const logEl = $('p1-log');
@@ -166,6 +171,18 @@ async function boot() {
   renderManager.start();
   lifecycle.claim('loop', renderManager);   // 唯一渲染循环（RenderManager.start 幂等）
 
+  // ---------------------------------------------------------- P7 性能观测
+  // 只挂在 RenderManager 的帧钩子上，不新建循环；自适应分辨率只改像素比。
+  const perf = new PerfMonitor({
+    renderManager, events, log: (m) => log(`[P7] ${m}`),
+  });
+  perf.attach();
+  lifecycle.claim('perf', perf);
+  const adaptive = new AdaptiveResolution({
+    renderManager, perf, config: ADAPTIVE_CONFIG, log: (m) => log(`[P7] ${m}`),
+  });
+  let probe = null;   // 一致性探针在场景就绪后构造（需要 mapCoordinate / 战斗坐标系）
+
   // ---------------------------------------------------------- 状态面板
   let lastConsistencyAt = 0;
   let cachedConsistency = null;
@@ -276,6 +293,45 @@ async function boot() {
         const e = integration.errors.getStatus();
         return `上报 ${e.reports}（致命 ${e.fatal}）· 恢复 ${e.recovered} · 失败 ${e.recoveryFailures}`;
       })()],
+      // ---------------------------------------------------------------- P7
+      ['P7 帧时间', (() => {
+        const f = perf.frameStats();
+        return f.samples ? `${f.fps}fps · 均值 ${f.meanMs}ms · p95 ${f.p95Ms}ms · 抖动 ${f.jitterMs}ms` : '采集中…';
+      })()],
+      ['P7 CPU / 帧', (() => {
+        const f = perf.frameStats();
+        return f.samples ? `${f.busyMeanMs}ms（占一帧 ${(f.busyShare * 100).toFixed(1)}%）` : '—';
+      })()],
+      ['P7 DrawCall / 三角形', (() => {
+        const r = perf.rendererInfo();
+        return r.available ? `${r.drawCalls} / ${r.triangles}` : '—';
+      })()],
+      ['P7 资源 / 像素比', (() => {
+        const r = perf.rendererInfo();
+        const a = adaptive.getStatus();
+        return r.available
+          ? `Geo ${r.geometries} · Tex ${r.textures} · Prog ${r.programs ?? '—'} · dpr ${r.pixelRatio}（上限 ${a.cap}）`
+          : '—';
+      })()],
+      ['P7 上下文', (() => {
+        const s = renderManager.stats;
+        return `丢失 ${s.contextLosses} / 恢复 ${s.contextRestores} / 跳过帧 ${s.skipped}`
+          + ` · 可见性暂停 ${s.visibilityPauses}`;
+      })()],
+      ['P7 长跑 / 掉帧', (() => {
+        const lr = perf.longRun();
+        const f = perf.frameStats();
+        return `运行 ${lr.spanSec}s · Geo ${lr.geometries >= 0 ? '+' : ''}${lr.geometries}`
+          + ` · Tex ${lr.textures >= 0 ? '+' : ''}${lr.textures}`
+          + ` · 掉帧 ${f.dropped}`
+          + `${lr.usedMB == null ? '' : ` · 堆 Δ${lr.usedMB >= 0 ? '+' : ''}${lr.usedMB}MB`}`;
+      })()],
+      ['P7 一致性探针', (() => {
+        if (!probe) return '未装配';
+        const r = probe.checks.length ? { total: probe.checks.length, failed: probe.checks.filter((c) => !c.ok).length } : null;
+        if (!r) return `可运行（${coreReady ? '38 城 + 200 将' : '等待内核'}）`;
+        return `${r.total - r.failed}/${r.total} 项通过`;
+      })()],
     ];
     if (statusList) {
       statusList.replaceChildren();
@@ -291,23 +347,23 @@ async function boot() {
     if (p3Chip) {
       const st = cityManager ? cityManager.getStatus() : null;
       p3Chip.textContent = !st ? '城市 UI 未装配'
-        : !st.cityLoop ? '城市 UI 待命（点击己方城）'
-          : st.open ? `城市管理 · ${st.cityId}` : '原版城市阶段 · 等待选城';
+        : !st.cityLoop ? '城市·待命'
+          : st.open ? `城市管理 #${st.cityId}` : '城市阶段·选城';
       p3Chip.style.color = st && st.cityLoop ? '#e0c07a' : '';
     }
     if (p4Chip) {
       const st = battleManager ? battleManager.getStatus() : null;
       const diag = st && st.diagnostics;
       p4Chip.textContent = !st ? '战斗未装配'
-        : !st.active ? '战斗待命'
-          : st.loaded && diag && diag.map ? `战斗中 · ${diag.map.width}×${diag.map.height}` : '战斗初始化中';
+        : !st.active ? '战斗·待命'
+          : st.loaded && diag && diag.map ? `战斗中 ${diag.map.width}×${diag.map.height}` : '战斗装载中';
       p4Chip.style.color = st && st.active ? '#e08a7a' : '';
     }
     if (p5Chip) {
       const st = battleOps ? battleOps.getStatus() : null;
       p5Chip.textContent = !st ? '操作未装配'
-        : !st.active ? '操作待命'
-          : `操作接管 · ${st.phase}`;
+        : !st.active ? '操作·待命'
+          : `操作 · ${st.phase}`;
       p5Chip.style.color = st && st.active ? '#9ad0ff' : '';
     }
     if (p6Chip) {
@@ -435,6 +491,120 @@ async function boot() {
     // 低频刷新门禁文案（战斗中/指令上下文的说明会随状态变化），只在面板可见时做。
     // 计时器统一登记到 lifecycle，dispose 时一定被清掉。
     lifecycle.interval(() => { if (savePanel && !savePanel.hidden) renderSavePanel(); }, 1200, 'p6-save-panel');
+  }
+
+  // ---------------------------------------------------------- P7 性能看板
+  const perfPanel = $('p7-perf');
+  const perfList = $('p7-perf-list');
+  const p7Chip = $('p7-chip');
+
+  /** 性能看板：全部数值来自 PerfMonitor 的实测采样；不可测量的项显示「不可测」。 */
+  function renderPerfPanel() {
+    if (!perfList) return;
+    const rep = perf.report();
+    const f = rep.frame;
+    const r = rep.renderer;
+    const lr = rep.longRun;
+    const ad = adaptive.getStatus();
+    const rows = [
+      ['FPS', `${f.fps}（平均 ${f.meanMs}ms）`],
+      ['帧时间 p95', `${f.p95Ms}ms（最长 ${f.maxMs}ms）`],
+      ['CPU / 帧', `${f.busyMeanMs}ms（占 ${(f.busyShare * 100).toFixed(1)}%）`],
+      ['Draw Calls', `${r.drawCalls} / 三角形 ${r.triangles}`],
+      ['资源', `Geo ${r.geometries} · Tex ${r.textures}`],
+      ['像素比', `${r.pixelRatio}（上限 ${ad.cap}，设备 ${ad.devicePixelRatio}）`],
+      ['JS 堆', rep.memory.available ? `${rep.memory.usedMB}MB` : '不可测'],
+      ['GPU 时间', rep.gpu.measurable ? '可测' : '不可测'],
+      ['长跑', `${lr.spanSec}s · Geo ${lr.geometries >= 0 ? '+' : ''}${lr.geometries}`
+        + ` · Tex ${lr.textures >= 0 ? '+' : ''}${lr.textures}`
+        + `${lr.usedMB == null ? '' : ` · 堆 Δ${lr.usedMB >= 0 ? '+' : ''}${lr.usedMB}MB`}`],
+      ['掉帧', `${f.dropped} 帧（${(f.dropRate * 100).toFixed(1)}%）`],
+    ];
+    perfList.replaceChildren();
+    for (const [k, v] of rows) {
+      const dt = document.createElement('dt');
+      dt.textContent = k;
+      const dd = document.createElement('dd');
+      dd.textContent = v;
+      perfList.append(dt, dd);
+    }
+    if (p7Chip) {
+      p7Chip.textContent = `性能 · ${f.fps}fps · ${r.drawCalls} draws · dpr ${r.pixelRatio}`;
+      p7Chip.dataset.adaptive = `${ad.cap}`;
+    }
+  }
+
+  function bindPerfPanel() {
+    const toggle = $('p7-toggle-perf');
+    if (toggle && perfPanel) {
+      toggle.addEventListener('click', () => {
+        perfPanel.hidden = !perfPanel.hidden;
+        if (!perfPanel.hidden) renderPerfPanel();
+      });
+    }
+    // 低频刷新（只在面板可见时算），计时器登记在 lifecycle 上，退出时统一清理。
+    lifecycle.interval(() => { if (perfPanel && !perfPanel.hidden) renderPerfPanel(); }, 1000, 'p7-perf-panel');
+  }
+
+  // ---------------------------------------------------------- P7 上下文丢失/恢复
+  // 只处理渲染层：提示 + 等待浏览器恢复 + 恢复后继续渲染。
+  // 绝不重新初始化场景、不重置任何游戏数据（P7 §6 明确要求）。
+  let loseCtxExt = null;
+  let loseCtxExtTried = false;
+  /**
+   * WEBGL_lose_context 扩展的缓存持有者。
+   * 规范：上下文丢失后 getExtension() 返回 null，扩展对象本身仍然可用
+   * （loseContext/restoreContext 就是为这种场景设计的），所以必须缓存首次拿到的实例。
+   */
+  function getLoseContextExt() {
+    if (loseCtxExt || loseCtxExtTried) return loseCtxExt;
+    loseCtxExtTried = true;
+    try {
+      const gl = renderManager.renderer.getContext();
+      loseCtxExt = gl.getExtension('WEBGL_lose_context') || null;
+    } catch (_) {
+      loseCtxExt = null;
+    }
+    return loseCtxExt;
+  }
+
+  function bindContextRecovery() {
+    getLoseContextExt();   // 趁上下文健康时先取一次，供后续演练/诊断使用
+    let lostSince = 0;
+    let promptTimer = null;
+    const clearPrompt = () => { if (promptTimer) { clearTimeout(promptTimer); promptTimer = null; } };
+    events.on(EVENTS.RENDERER_CONTEXT_LOST, () => {
+      lostSince = Date.now();
+      log('[P7] WebGL 上下文丢失，暂停绘制并等待恢复');
+      integration.ui.toast('3D 上下文丢失，正在等待浏览器恢复…', 'warn', 6000);
+      clearPrompt();
+      promptTimer = setTimeout(() => {
+        if (!renderManager.contextLost) return;
+        log('[P7] 上下文 6s 未恢复，给出重新加载提示');
+        integration.errors.report('renderer.context', new Error('WebGL 上下文长时间未恢复'), {
+          kind: 'fatal',
+          fatal: true,
+          context: { lostSince },
+          actions: [
+            { label: '重新加载页面', value: 'reload' },
+            { label: '继续等待', value: 'wait' },
+          ],
+        });
+      }, CONTEXT_LOST_CONFIG.restoreGraceMs);
+    });
+    events.on(EVENTS.RENDERER_CONTEXT_RESTORED, () => {
+      clearPrompt();
+      const downMs = lostSince ? Date.now() - lostSince : 0;
+      log(`[P7] WebGL 上下文已恢复（中断 ${downMs}ms），继续渲染，游戏状态未改动`);
+      integration.ui.toast(`3D 渲染已恢复（中断 ${(downMs / 1000).toFixed(1)}s），游戏状态未受影响`, 'ok', 4200);
+      integration.ui.hideFatal();
+      // renderer.info 在恢复后会被 three 重建，重新采样一次长跑基线，避免误判为「资源暴涨」
+      perf.reset();
+    });
+    // 页面隐藏时渲染层自动暂停（RenderManager 内部处理），这里只记日志便于诊断
+    events.on(EVENTS.RENDERER_VISIBILITY_CHANGED, ({ hidden }) => {
+      log(`[P7] 页面${hidden ? '隐藏 -> 暂停绘制' : '可见 -> 恢复绘制'}`);
+    });
   }
 
   // ---------------------------------------------------------- 自检套件
@@ -1004,6 +1174,73 @@ async function boot() {
     });
     suites.push(p6.summary());
 
+    // ---------------------------------------------------------- P7 最终验收自检
+    const p7 = makeSuite('P7 最终验收');
+    p7.check('只有一个渲染循环，性能采样挂在帧钩子上', () => {
+      const st = renderManager.stats;
+      const s = lifecycle.summary();
+      if (!s.singletons.includes('loop')) throw new Error('loop 未登记为唯一对象');
+      if (!s.singletons.includes('perf')) throw new Error('perf 未登记为唯一对象');
+      if (!perf.attached) throw new Error('帧钩子未挂载');
+      if (st.frames < 1) throw new Error('渲染循环没有推进');
+      // 帧钩子只能有一条（重复 attach 会叠加）
+      if (perf.attach() !== false) throw new Error('重复 attach 未被拒绝');
+      return `frames=${st.frames} / hook=${perf.attached} / 单例 ${s.singletons.length} 个`;
+    });
+    p7.check('帧时间统计可用（真实采样，不是编造）', () => {
+      const f = perf.frameStats();
+      if (!f.samples) throw new Error('没有帧样本');
+      if (!(f.fps > 1 && f.fps < 1000)) throw new Error(`fps 异常 ${f.fps}`);
+      if (!(f.p95Ms >= f.p50Ms)) throw new Error('分位数顺序异常');
+      if (!(f.busyMeanMs >= 0 && f.busyMeanMs < f.meanMs * 2)) throw new Error(`CPU 帧耗时异常 ${f.busyMeanMs}`);
+      return `${f.fps}fps / mean ${f.meanMs}ms / p95 ${f.p95Ms}ms / CPU ${f.busyMeanMs}ms`;
+    });
+    p7.check('自适应像素比在允许区间内，且只改渲染分辨率', () => {
+      const a = adaptive.getStatus();
+      const cap = renderManager.getPixelRatioCap();
+      if (cap < ADAPTIVE_CONFIG.minCap - 1e-6 || cap > ADAPTIVE_CONFIG.maxCap + 1e-6) {
+        throw new Error(`像素比上限越界 ${cap}`);
+      }
+      if (a.maxCap !== ADAPTIVE_CONFIG.maxCap) throw new Error('maxCap 未生效');
+      // 有效下限 = min(1, 设备像素比)：dpr=1 时不把画面降到原生分辨率以下
+      if (!(a.minCap >= ADAPTIVE_CONFIG.minCap - 1e-6 && a.minCap <= 1 + 1e-6)) {
+        throw new Error(`有效下限异常 ${a.minCap}`);
+      }
+      if (Math.abs(a.cap - cap) > 1e-6) throw new Error('面板数值与渲染器不一致');
+      // 相机/逻辑坐标必须不受影响
+      const c0 = adapter.getCity(0).position;
+      if (c0.x !== 1 || c0.y !== 0) throw new Error(`逻辑坐标被改动 ${JSON.stringify(c0)}`);
+      return `cap ${cap} / 设备 ${a.devicePixelRatio} / 评估 ${a.evaluations} 次 / 降档 ${a.downshifts}`;
+    });
+    p7.check('浏览器不暴露的指标如实标注为不可测', () => {
+      const rep = perf.report();
+      if (rep.gpu.measurable !== false) throw new Error('GPU 时间不应声称可测');
+      if (!rep.gpu.reason) throw new Error('缺少不可测原因说明');
+      if (!('available' in rep.memory)) throw new Error('缺少内存可用性标记');
+      if (rep.memory.available && !(rep.memory.usedMB > 0)) throw new Error('声称可测却没有数值');
+      return `GPU 不可测（${rep.gpu.extensionPresent ? '有 EXT 但未使用' : '无 EXT'}）`
+        + ` / JS 堆 ${rep.memory.available ? rep.memory.usedMB + 'MB' : '不可测'}`;
+    });
+    p7.check('原版一致性探针：城市/连接/势力/武将/坐标全绿', () => {
+      const r = probe.run();
+      if (!r.ok) throw new Error(r.failures.map((f) => `${f.name}:${f.detail}`).join('；'));
+      return `${r.passed}/${r.total} 项（${r.counts.cities} 城 / ${r.counts.officers} 将）`;
+    });
+    p7.check('WebGL 上下文丢失 -> 恢复链路可用且不弹致命面板', () => {
+      const before = integration.ui.getStatus();
+      events.emit(EVENTS.RENDERER_CONTEXT_LOST, { reason: 'selftest' });
+      const during = integration.ui.getStatus();
+      const lostFlag = renderManager.contextLost;
+      events.emit(EVENTS.RENDERER_CONTEXT_RESTORED, { reason: 'selftest' });
+      const after = integration.ui.getStatus();
+      if (lostFlag) throw new Error('自检不应真的弄丢上下文（浏览器状态不支持手动恢复）');
+      if (during.toasts < before.toasts) throw new Error('丢失时没有提示');
+      if (after.fatal) throw new Error('恢复后仍显示致命面板');
+      if (renderManager.contextLost) throw new Error('恢复后仍标记为丢失');
+      return `提示 ${before.toasts} -> ${during.toasts} / 恢复后致命=${after.fatal}`;
+    });
+    suites.push(p7.summary());
+
     const pass = suites.reduce((n, s) => n + s.pass, 0);
     const fail = suites.reduce((n, s) => n + s.fail, 0);
     if (verbose) {
@@ -1029,10 +1266,13 @@ async function boot() {
         const mine = adapter.getCities().find((c) => c.ownerId === gs.playerKing + 1);
         ctx.cityId = mine ? mine.id : 0;
       }
+      const t0 = (typeof performance !== 'undefined' ? performance.now() : Date.now());
       const r = integration
         ? integration.director.switchTo(id, ctx)
         : scenes.switchTo(id, ctx);
       if (r && r.ok === false) throw new Error(r.reason || '切换被拒绝');
+      // P7：把切换耗时记进性能报告（只统计，不参与任何决策）
+      perf.noteSceneSwitch(id, (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0);
       log(`场景切换 -> ${id}（测试入口，未执行任何原版游戏操作）`);
     } catch (e) { log(`场景切换被拒绝：${e.message}`); }
     renderStatus();
@@ -1152,6 +1392,28 @@ async function boot() {
   lifecycle.setState('ready');
   bindSavePanel();
   log(`P6 全局整合已装配：存档 ${integration.saves.slots().length} 槽 · UI 栈 · 一致性检查`);
+
+  // ---------------------------------------------------------- P7 装配
+  // 0) 长跑基线重设：perf.attach() 发生在场景装配之前，那一刻资源还是 0；
+  //    到这里场景已经装好、启动自检即将开始，才是「就绪基线」。否则面板会把
+  //    「装配 38 城 + 贴图 + 字库」误报成资源泄漏（曾显示 Geo +10 / Tex +40 / 堆 +54MB）。
+  //    只重设资源/堆基线，帧统计保留（自检要立刻读到真实样本）。
+  perf.rebaseline();
+  // 1) 自适应分辨率：初始化后再启动，避免启动抖动被当成「填充率不足」误降档。
+  adaptive.start();
+  lifecycle.claim('adaptive', adaptive);
+  bindPerfPanel();
+  // 2) WebGL 上下文丢失/恢复：只提示 + 恢复渲染，绝不重置任何游戏状态。
+  bindContextRecovery();
+  // 3) 原版一致性探针：用现有 mapCoordinate + 战斗场景的坐标系（不新建第二套）
+  const makeProbe = () => new ConsistencyProbe({
+    core, adapter, mapCoordinate,
+    battleCoordinate: battleManager && battleManager.scene ? battleManager.scene.battleCoord : null,
+  });
+  probe = makeProbe();
+  log(`P7 已装配：帧钩子 ${perf.attached ? 'on' : 'off'} · 自适应像素比 ${adaptive.stats.cap}`
+    + ` · 上下文丢失可恢复`);
+
   log('提示：点「原版画面」在主菜单开新局，进入剧本后点击己方城市即可打开城市管理');
   renderManager.resize();           // 触发 worldCamera.fit，保证整图可见
   renderStatus();
@@ -1348,10 +1610,58 @@ async function boot() {
     switchScene,
   });
 
+  /** P7 最终验收入口（性能只读读数 + 一致性探针 + 上下文恢复演练）。 */
+  window.__P7__ = Object.freeze({
+    version: P7_VERSION,
+    perf, adaptive,
+    /** 完整性能报告（与文档里引用的口径一致）。 */
+    perfReport: () => perf.report(),
+    /** 帧统计单独取（面板/断言用，避免每次都拿全量报告）。 */
+    frameStats: () => perf.frameStats(),
+    rendererInfo: () => perf.rendererInfo(),
+    /** 原版一致性：新构造探针跑一遍，不复用任何缓存。 */
+    consistency: (opts) => (probe || makeProbe()).run(opts),
+    /** 探针上一次的结果（不重跑）。 */
+    lastConsistency: () => (probe && probe.checks.length
+      ? { total: probe.checks.length, failed: probe.checks.filter((c) => !c.ok).length }
+      : null),
+    setAdaptive: (on) => adaptive.setEnabled(on),
+    adaptiveStatus: () => adaptive.getStatus(),
+    /**
+     * 上下文丢失演练（真实调用 WEBGL_lose_context，不是模拟）。
+     * 注意：上下文一旦丢失，gl.getExtension() 按规范**返回 null**，
+     * 所以扩展对象必须在丢失前拿到并缓存，否则 restoreContext() 永远拿不回来。
+     */
+    loseContext: () => {
+      const ext = getLoseContextExt();
+      if (!ext) return { ok: false, reason: 'WEBGL_lose_context 不可用（浏览器不支持）' };
+      ext.loseContext();
+      return { ok: true, method: 'WEBGL_lose_context.loseContext' };
+    },
+    restoreContext: () => {
+      const ext = getLoseContextExt();
+      if (!ext) return { ok: false, reason: 'WEBGL_lose_context 不可用（浏览器不支持）' };
+      ext.restoreContext();
+      return { ok: true, method: 'WEBGL_lose_context.restoreContext' };
+    },
+    /**
+     * 游戏状态指纹：**只有业务数据**。
+     * 早先版本把 fps/drawCalls 也拼进来了，导致「前后一致」这类断言会被渲染抖动误判成
+     * 「状态被改了」——指纹里出现任何随时间变化的量都是错的设计。渲染读数单独给 perfReport()。
+     */
+    stateFingerprint: () => ({
+      year: core.Dn.g_YearDate, month: core.Dn.g_MonthDate, king: core.Dn.g_PlayerKing,
+      period: core.Dn.g_PIdx, battleOver: core.Dn.g_FgtOver, battleRound: core.Dn.g_FgtBoutCnt,
+      cities: core.Dn.g_Cities.map((c) => `${c.Belong}:${c.Money}:${c.Food}:${c.Farming}`).join(','),
+      persons: core.Dn.g_Persons.map((p) => `${p.Belong}:${p.Arms}`).join(','),
+    }),
+    runSmoke,
+    switchScene,
+  });
+
   lifecycle.setState('running');
   renderStatus();
-  return window.__P1__;
-}
+  return window.__P1__;}
 
 boot().catch((e) => {
   document.body.dataset.p1Status = 'error';

@@ -28,6 +28,10 @@ export const EVENTS = Object.freeze({
   ORDER_CONTEXT_CHANGED: 'ORDER_CONTEXT_CHANGED',   // 原版 window.__SGBY_CTX
   SCENE_CHANGED: 'SCENE_CHANGED',                  // SceneManager
   RENDERER_ERROR: 'RENDERER_ERROR',                // RenderManager
+  // P7 附加（浏览器真实事件，非虚构）：
+  RENDERER_CONTEXT_LOST: 'RENDERER_CONTEXT_LOST',        // canvas webglcontextlost
+  RENDERER_CONTEXT_RESTORED: 'RENDERER_CONTEXT_RESTORED', // canvas webglcontextrestored
+  RENDERER_VISIBILITY_CHANGED: 'RENDERER_VISIBILITY_CHANGED', // document.visibilitychange
 });
 
 const ALL = new Set(Object.values(EVENTS));

@@ -39,22 +39,27 @@ html, body { height: 100%; overflow: hidden; }
 
 #p1-toolbar {
   position: absolute; top: 0; left: 0; right: 0;
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px;
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 8px 14px;
   background: rgba(12, 14, 17, .82);
   border-bottom: 1px solid var(--p1-line);
   color: var(--p1-text); font-size: 13px;
 }
-.p1-title { font-weight: 600; letter-spacing: .04em; margin-right: auto; }
+.p1-title { font-weight: 600; letter-spacing: .04em; margin-right: auto; white-space: nowrap; }
 .p1-chip {
+  flex: 0 0 auto;
   padding: 3px 9px; border: 1px solid var(--p1-line);
   border-radius: 999px; color: var(--p1-dim); font-size: 12px;
+  white-space: nowrap;          /* P7：曾因缺少 nowrap 把「战斗中待命」竖排成 4 行 */
 }
 
 .p1-btn {
+  flex: 0 0 auto;
   background: #262b32; color: var(--p1-text);
   border: 1px solid var(--p1-line); border-radius: 5px;
   padding: 5px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  white-space: nowrap;
 }
 .p1-btn:hover { background: #313843; }
 .p1-btn:disabled { opacity: .42; cursor: not-allowed; }

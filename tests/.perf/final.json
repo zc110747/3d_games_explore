@@ -1,0 +1,349 @@
+{
+  "label": "final",
+  "at": "2026-11-07T03:06:45.540Z",
+  "env": {
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0",
+    "dpr": 1,
+    "viewport": [
+      1570,
+      758
+    ],
+    "gl": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+    "threads": 20,
+    "memory": {
+      "limitMB": 4192
+    },
+    "three": "0.187.0",
+    "mode": "swiftshader"
+  },
+  "scenarios": {
+    "idleWorld": {
+      "frames": 356,
+      "fps": 59.33,
+      "meanMs": 16.85,
+      "p50Ms": 16.7,
+      "p95Ms": 16.8,
+      "p99Ms": 16.8,
+      "maxMs": 33.4,
+      "jitterMs": 1.76,
+      "frameCost": {
+        "n": 20,
+        "medianMs": 0.1,
+        "p95Ms": 0.3,
+        "maxMs": 0.5
+      },
+      "tex": {
+        "available": true,
+        "count": 40,
+        "mb": 6.21
+      },
+      "info": {
+        "scene": "world",
+        "drawCalls": 88,
+        "triangles": 13046,
+        "lines": 0,
+        "points": 0,
+        "geometries": 10,
+        "textures": 40,
+        "programs": 11,
+        "pixelRatio": 1,
+        "canvas": [
+          1570,
+          724
+        ],
+        "mem": {
+          "usedMB": 64.06,
+          "totalMB": 72.01
+        },
+        "dom": 367,
+        "events": 33
+      }
+    },
+    "stressWorld": {
+      "frames": 347,
+      "fps": 57.68,
+      "meanMs": 17.34,
+      "p50Ms": 16.7,
+      "p95Ms": 16.8,
+      "p99Ms": 16.8,
+      "maxMs": 233.3,
+      "jitterMs": 11.64,
+      "events": 0,
+      "info": {
+        "scene": "world",
+        "drawCalls": 50,
+        "triangles": 12970,
+        "lines": 0,
+        "points": 0,
+        "geometries": 10,
+        "textures": 40,
+        "programs": 11,
+        "pixelRatio": 1,
+        "canvas": [
+          1570,
+          724
+        ],
+        "mem": {
+          "usedMB": 62.57,
+          "totalMB": 70.29
+        },
+        "dom": 367,
+        "events": 33
+      }
+    },
+    "switch": {
+      "toBattle": {
+        "id": "battle",
+        "buildMs": 2,
+        "firstFrameMs": 169
+      },
+      "toWorld": {
+        "id": "world",
+        "buildMs": 2,
+        "firstFrameMs": 156
+      },
+      "battleIdle": {
+        "frames": 179,
+        "fps": 59.99,
+        "meanMs": 16.67,
+        "p50Ms": 16.7,
+        "p95Ms": 16.8,
+        "p99Ms": 16.8,
+        "maxMs": 17,
+        "jitterMs": 0.06,
+        "frameCost": {
+          "n": 20,
+          "medianMs": 0,
+          "p95Ms": 0.1,
+          "maxMs": 0.1
+        },
+        "tex": {
+          "available": true,
+          "count": 0,
+          "mb": 0
+        },
+        "info": {
+          "scene": "battle",
+          "drawCalls": 0,
+          "triangles": 0,
+          "lines": 0,
+          "points": 0,
+          "geometries": 10,
+          "textures": 40,
+          "programs": 11,
+          "pixelRatio": 1,
+          "canvas": [
+            1570,
+            724
+          ],
+          "mem": {
+            "usedMB": 62.41,
+            "totalMB": 70.37
+          },
+          "dom": 367,
+          "events": 35
+        }
+      }
+    },
+    "dpr2World": {
+      "frames": 209,
+      "fps": 52.47,
+      "meanMs": 19.06,
+      "p50Ms": 16.7,
+      "p95Ms": 33.4,
+      "p99Ms": 33.4,
+      "maxMs": 50,
+      "jitterMs": 6.07,
+      "frameCost": {
+        "n": 20,
+        "medianMs": 0.2,
+        "p95Ms": 0.4,
+        "maxMs": 0.5
+      },
+      "info": {
+        "scene": "world",
+        "drawCalls": 82,
+        "triangles": 12992,
+        "lines": 0,
+        "points": 0,
+        "geometries": 10,
+        "textures": 40,
+        "programs": 11,
+        "pixelRatio": 1.25,
+        "canvas": [
+          1600,
+          900
+        ],
+        "mem": {
+          "usedMB": 74.17,
+          "totalMB": 82.09
+        },
+        "dom": 367,
+        "events": 40
+      },
+      "adaptive": {
+        "enabled": true,
+        "cap": 1.25,
+        "devicePixelRatio": 2,
+        "effectivePixelRatio": 1.25,
+        "minCap": 1,
+        "maxCap": 2,
+        "ceiling": 1.5,
+        "dprChanges": 1,
+        "warmupWindows": 3,
+        "evaluations": 33,
+        "downshifts": 2,
+        "upshifts": 1,
+        "lastReason": "mean 17.5ms < 18ms（稳定 60fps）",
+        "p95Ms": 33.4,
+        "meanMs": 18.89,
+        "history": [
+          {
+            "at": 1794020827137,
+            "cap": 2,
+            "dpr": 2,
+            "reason": "设备像素比变为 2"
+          },
+          {
+            "at": 1794020829533,
+            "cap": 1.5,
+            "dpr": 1.5,
+            "reason": "p95 50ms > 22ms（严重，降两档）"
+          },
+          {
+            "at": 1794020831935,
+            "cap": 1,
+            "dpr": 1,
+            "reason": "p95 50.1ms > 22ms（严重，降两档）"
+          },
+          {
+            "at": 1794020845133,
+            "cap": 1.25,
+            "dpr": 1.25,
+            "reason": "mean 17.5ms < 18ms（稳定 60fps）"
+          }
+        ]
+      }
+    }
+  },
+  "soak": [
+    {
+      "t": 5,
+      "geometries": 10,
+      "textures": 40,
+      "programs": 11,
+      "usedMB": 78.43,
+      "dom": 367,
+      "events": 40
+    },
+    {
+      "t": 10,
+      "geometries": 10,
+      "textures": 40,
+      "programs": 11,
+      "usedMB": 78.12,
+      "dom": 367,
+      "events": 40
+    },
+    {
+      "t": 15,
+      "geometries": 10,
+      "textures": 40,
+      "programs": 11,
+      "usedMB": 78.05,
+      "dom": 367,
+      "events": 40
+    },
+    {
+      "t": 20,
+      "geometries": 10,
+      "textures": 40,
+      "programs": 11,
+      "usedMB": 76.08,
+      "dom": 367,
+      "events": 40
+    }
+  ],
+  "notes": [],
+  "growth": {
+    "geometries": 0,
+    "textures": 0,
+    "usedMB": -2.35,
+    "dom": 0,
+    "events": 0
+  },
+  "p7": {
+    "version": "7.0.0-p7",
+    "attached": true,
+    "uptimeSec": 60.2,
+    "frame": {
+      "samples": 240,
+      "fps": 59.75,
+      "meanMs": 16.74,
+      "p50Ms": 16.7,
+      "p95Ms": 16.8,
+      "p99Ms": 16.8,
+      "maxMs": 33.3,
+      "jitterMs": 1.07,
+      "dropped": 210,
+      "dropRate": 0.064,
+      "busyMeanMs": 0.406,
+      "busyP95Ms": 0.9,
+      "busyMaxMs": 1.3,
+      "busyShare": 0.0243
+    },
+    "renderer": {
+      "available": true,
+      "drawCalls": 88,
+      "triangles": 13046,
+      "lines": 0,
+      "points": 0,
+      "geometries": 10,
+      "textures": 40,
+      "programs": 11,
+      "pixelRatio": 1,
+      "pixelRatioCap": 1,
+      "contextLost": false,
+      "canvas": [
+        1570,
+        724
+      ]
+    },
+    "memory": {
+      "available": true,
+      "usedMB": 76.08,
+      "totalMB": 85.47,
+      "limitMB": 4192,
+      "usedRatio": 0.0181
+    },
+    "gpu": {
+      "measurable": false,
+      "extensionPresent": true,
+      "reason": "WebGL 不提供稳定的 GPU 帧时间读数；EXT_disjoint_timer_query 存在但需专用查询管线，本项目不使用以免影响渲染路径"
+    },
+    "longRun": {
+      "available": true,
+      "rebased": false,
+      "spanSec": 60.2,
+      "geometries": 0,
+      "textures": 0,
+      "programs": 0,
+      "usedMB": 1.94,
+      "domNodes": -2,
+      "heapSamples": 61,
+      "heapMinMB": 60.63,
+      "heapMaxMB": 99.95
+    },
+    "scene": {
+      "count": 1,
+      "lastMs": 0.9,
+      "totalMs": 0.900000000372529,
+      "lastTo": "battle",
+      "avgMs": 0.9
+    },
+    "adaptive": null,
+    "totalSamples": 3283,
+    "slowFrames": 210
+  },
+  "exceptions": 0
+}

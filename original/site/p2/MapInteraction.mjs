@@ -34,7 +34,9 @@ export class MapInteraction {
     this.selectedCityId = null;
     this.lastRequest = null;
     this.lastOriginalCursor = null;
-    this.stats = { clicks: 0, cityHits: 0, emptyClicks: 0, drags: 0, wheels: 0, blockedByUI: 0 };
+    this.stats = { clicks: 0, cityHits: 0, emptyClicks: 0, drags: 0, wheels: 0, blockedByUI: 0, hovers: 0 };
+    this._hoverRaf = 0;            // P7：悬停拾取的帧节流句柄
+    this._hoverCity = null;
   }
 
   setIntent(intent) {
@@ -47,6 +49,7 @@ export class MapInteraction {
     const offDrag = this.input.on('drag', ({ dx, dy }) => {
       if (!this.isActive()) return;
       this.stats.drags++;
+      this._setHoverCity(null);          // P7：拖动时清悬停（避免光标/高亮来回跳）
       const cam = this._getCamera();
       if (cam) this.worldCamera.panByPixels(cam, dx, dy);
     });
@@ -72,8 +75,42 @@ export class MapInteraction {
       else if (key === '+' || key === '=') this.worldCamera.zoomBy(cam, 1.12);
       else if (key === '-' || key === '_') this.worldCamera.zoomBy(cam, 1 / 1.12);
     });
-    this._unbind.push(offDrag, offWheel, offClick, offKey);
+    // P7：悬停反馈。按帧节流（与 P4 战斗地图同一做法），只做拾取 + 改 instanceColor，
+    // 不改变选中态、不发任何游戏事件、不写任何数据。
+    const offHover = this.input.on('pointermove', (p) => {
+      if (!this.isActive()) return;
+      if (this._hoverRaf) return;
+      this._hoverRaf = typeof requestAnimationFrame === 'function'
+        ? requestAnimationFrame(() => {
+          this._hoverRaf = 0;
+          this._updateHover(p.ndcX, p.ndcY);
+        })
+        : 0;
+      if (!this._hoverRaf) this._updateHover(p.ndcX, p.ndcY);
+    });
+    const offLeave = this.input.on('pointerleave', () => this._setHoverCity(null));
+    this._unbind.push(offDrag, offWheel, offClick, offKey, offHover, offLeave);
     return this;
+  }
+
+  /** 悬停拾取（按帧节流后调用）；命中变化才改材质与光标。 */
+  _updateHover(ndcX, ndcY) {
+    let id = null;
+    try { id = this.pick(ndcX, ndcY); } catch (_) { id = null; }
+    this._setHoverCity(id);
+  }
+
+  _setHoverCity(cityId) {
+    const renderer = this.scene.cityRenderer;
+    if (!renderer || typeof renderer.setHover !== 'function') return null;
+    const next = renderer.setHover(cityId);
+    if (next !== this._hoverCity) {
+      this._hoverCity = next;
+      this.stats.hovers = (this.stats.hovers || 0) + 1;
+      const el = this.input && this.input.container;
+      if (el && el.style) el.style.cursor = next === null ? '' : 'pointer';
+    }
+    return next;
   }
 
   /** Raycaster 拾取；使用独立的透明拾取区 + 城廓实例，返回原版 cityId。 */
@@ -150,6 +187,8 @@ export class MapInteraction {
 
   dispose() {
     if (this._timer) { clearTimeout(this._timer); this._timer = null; }
+    if (this._hoverRaf) { cancelAnimationFrame(this._hoverRaf); this._hoverRaf = 0; }
+    this._setHoverCity(null);
     for (const off of this._unbind.splice(0)) off();
   }
 }
