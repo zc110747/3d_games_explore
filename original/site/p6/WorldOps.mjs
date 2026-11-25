@@ -127,7 +127,9 @@ export class WorldOps {
   _buildOps() {
     const host = this.opsHost;
     if (!host || this._buttons.size) return;
-    host.replaceChildren();
+    // 只清掉自己生成的按钮组：宿主里还有别人预置的静态元素（阵营图例 #p2-legend），
+    // 用 replaceChildren() 会把它们一起删掉。
+    host.querySelectorAll(':scope > .p6-ops-group, :scope > .p6-dpad').forEach((n) => n.remove());
     for (const group of OPS_LAYOUT) {
       const wrap = document.createElement('div');
       wrap.className = group.id === 'dpad' ? 'p6-dpad' : 'p6-ops-group';

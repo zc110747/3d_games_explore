@@ -39,13 +39,18 @@
   #p2-hint { display: none; }
 }
 
-/* P6 §8.1：阵营图例 —— 与旗帜/地面环同色，帮助"一眼分敌我"（纯表现，不参与判定） */
+/* P6 §8.1：阵营图例 —— 与旗帜/地面环同色，帮助"一眼分敌我"（纯表现，不参与判定）。
+   它坐在 #p6-ops 操作条里（flex item），不再绝对定位：
+   左下角会被默认打开的左侧调试面板压住（实测整块不可见），而操作条天然只在
+   「3D 视图 + 战略地图场景」显示，位置与显隐都不需要另外维护。 */
 #p2-legend {
-  position: absolute; left: 16px; bottom: 42px; z-index: 9;
-  display: flex; gap: 12px; align-items: center;
-  padding: 5px 12px; border-radius: 999px;
-  background: rgba(12, 14, 17, .78); border: 1px solid var(--p1-line);
-  color: var(--p1-dim); font-size: 11.5px; pointer-events: none;
+  order: -1;                     /* 排在按键组左边 */
+  display: flex; gap: 11px; align-items: center;
+  padding: 0 10px 0 4px;
+  border-right: 1px solid rgba(200, 160, 90, .22);
+  color: #b9a98c; font-size: 11.5px; line-height: 1;
+  pointer-events: none;          /* 不抢操作条的点击 */
+  white-space: nowrap;
 }
 #p2-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .p2-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }

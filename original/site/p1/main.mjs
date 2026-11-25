@@ -190,6 +190,10 @@ async function boot() {
   // ---------------------------------------------------------- 状态面板
   let lastConsistencyAt = 0;
   let cachedConsistency = null;
+  /** 一致性重算时若发现失配就记一条（顶栏红字必须为 0；测试靠它抓瞬时失配，
+      因为 renderStatus 每秒才刷一次，截图/采样很容易错过那一刻）。 */
+  const consistencyLog = [];
+  const CONSISTENCY_LOG_MAX = 24;
   function renderStatus() {
     const coreReady = !!(core && core.Dn && core.lib);
     const gs = coreReady ? adapter.getGameState() : null;
@@ -201,6 +205,13 @@ async function boot() {
     if (integration && nowTs - lastConsistencyAt > 1000) {
       lastConsistencyAt = nowTs;
       try { cachedConsistency = integration.sync.consistency(); } catch (_) { cachedConsistency = null; }
+      if (cachedConsistency && !cachedConsistency.ok) {
+        const key = cachedConsistency.mismatches.join('；');
+        if (consistencyLog[consistencyLog.length - 1] !== key) {
+          consistencyLog.push(key);
+          if (consistencyLog.length > CONSISTENCY_LOG_MAX) consistencyLog.shift();
+        }
+      }
     }
     const rows = [
       ['Three.js 版本', THREE_VERSION],
@@ -1726,6 +1737,8 @@ async function boot() {
         view: viewMode ? { mode: viewMode.mode, held: viewMode.held, stats: { ...viewMode.stats } } : null,
         bodyView: document.body.dataset.sangoView,
         opsHidden: !!(document.getElementById('p6-ops') && document.getElementById('p6-ops').hidden),
+        // 历史上出现过的失配文案（去连续重复、上限 24）。空数组 = 全程没抖过。
+        consistencyLog: consistencyLog.slice(),
       };
     },
     /** 调试：钉住某个视图（hold=true 时暂停自动判定）。 */

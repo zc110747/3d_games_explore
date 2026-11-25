@@ -301,6 +301,60 @@ try {
     && JSON.stringify(gameView.opsActions) === JSON.stringify(expectActions),
     `keys=${gameView.opsKeys.join(',')} actions=${gameView.opsActions.join(',')}`);
 
+  // 按键"挂在 DOM 上"不等于"看得见、点得到"：11 键曾在小视口挤到视口外或被别的层压住。
+  // 这里逐个按钮取包围盒，再用 elementFromPoint 验证它真的是最上层。
+  const opsGeom = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const out = [...document.querySelectorAll('#p6-ops .p6-key')].map((b) => {
+      const r = b.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const hit = document.elementFromPoint(cx, cy);
+      return {
+        label: (b.textContent || '').trim() || b.dataset.p6Key || b.dataset.p6Action,
+        w: Math.round(r.width), h: Math.round(r.height),
+        inView: r.left >= 0 && r.top >= 0 && r.right <= vw && r.bottom <= vh,
+        reachable: !!hit && (hit === b || b.contains(hit)),
+      };
+    });
+    return { vw, vh, out };
+  })())`));
+  const outOfView = opsGeom.out.filter((b) => !b.inView).map((b) => b.label);
+  const notReachable = opsGeom.out.filter((b) => !b.reachable).map((b) => b.label);
+  check('操作条 11 键全部在视口内且可点（不被裁切/遮挡）',
+    opsGeom.out.length === 11
+    && opsGeom.out.every((b) => b.inView && b.reachable && b.w > 0 && b.h > 0),
+    `视口 ${opsGeom.vw}x${opsGeom.vh} · 越界 ${outOfView.join(',') || '无'} · 点不到 ${notReachable.join(',') || '无'}`);
+
+  // 阵营图例：P6 §8.1 的产物。它曾经挂在左下角、被默认打开的左侧调试面板整块压住
+  // （文档写着有、画面完全看不到）。现在坐在操作条里，必须是"看得见 + 三色对"。
+  const legendState = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const el = document.getElementById('p2-legend');
+    if (!el) return { exists: false };
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    const dots = [...el.querySelectorAll('.p2-dot')].map((d) => getComputedStyle(d).backgroundColor);
+    const ops = document.getElementById('p6-ops');
+    return {
+      exists: true, display: cs.display, w: Math.round(r.width), h: Math.round(r.height),
+      inView: r.left >= 0 && r.top >= 0 && r.right <= window.innerWidth && r.bottom <= window.innerHeight,
+      inOps: !!ops && ops.contains(el),
+      dots,
+      opsButtons: ops ? ops.querySelectorAll('.p6-key').length : 0,
+    };
+  })())`));
+  const hexToRgb = (h) => `rgb(${parseInt(h.slice(1, 3), 16)}, ${parseInt(h.slice(3, 5), 16)}, ${parseInt(h.slice(5, 7), 16)})`;
+  check('阵营图例可见、在操作条内且三色正确',
+    legendState.exists === true && legendState.display !== 'none'
+    && legendState.w > 0 && legendState.h > 0 && legendState.inView === true
+    && legendState.inOps === true && legendState.dots.length === 3
+    && legendState.dots[0] === hexToRgb('#2f6fd0')
+    && legendState.dots[1] === hexToRgb('#c0392b')
+    && legendState.dots[2] === hexToRgb('#4b5058')
+    && legendState.opsButtons === 11,
+    `display=${legendState.display} ${legendState.w}x${legendState.h} inView=${legendState.inView}`
+    + ` 在操作条内=${legendState.inOps} · 圆点 ${legendState.dots.join(' / ')}`
+    + ` · 操作条按钮仍为 ${legendState.opsButtons} 个`);
+
   // 「菜单」= 原版右上角菜单（云存档 / MOD / 关于）：面板是 body 上的 .wm-overlay，
   // 直接开在 3D 之上（实测 kind 仍为 zs、视图不跳）。注意页面里还有一个「云存档同步」同 class
   // 的隐藏面板，选择器必须挑"当前打开的那个"，否则会点到别人的关闭按钮（踩过）。
@@ -2011,6 +2065,13 @@ try {
     + (p7Cons.ok ? '' : ' · ' + p7Cons.failures.map((f) => `${f.name}:${f.detail}`).join('；')));
   check('P7 一致性探针只读（跑完整套后 Dn 指纹不变，年份/城市/兵力一致）',
     p7Fp0 === p7Fp1, p7Fp0 === p7Fp1 ? '指纹一致' : '指纹变化（探针写了游戏状态？）');
+
+  // 顶栏「整合 · 不一致 N 项」来自每秒重算的缓存值 —— 之前没有任何断言盯着它，
+  // 截图里出现过"不一致 1 项"却全绿。consistencyLog 由主循环记录全程每一次失配文案。
+  const consLog = JSON.parse(await evaluate('JSON.stringify(window.__P6__.getSnapshot().consistencyLog || [])'));
+  check('全程 UI 一致性红字为 0（顶栏从未出现「不一致 N 项」）',
+    consLog.length === 0,
+    consLog.length ? `${consLog.length} 条：${consLog.join(' / ')}` : '全程未出现失配');
 
   // ---- WebGL 上下文丢失 / 恢复（真实 WEBGL_lose_context，不是模拟事件）
   const p7Frames0 = await evaluate('window.__P1__.renderManager.stats.frames');

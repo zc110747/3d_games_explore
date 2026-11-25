@@ -71,15 +71,17 @@
     </section>
     <div id="p2-hint">点击 = 移动原版光标（再点同格 = 确认） · 方向键/WASD 移动 · E 确认 · Q 返回 · 拖动平移 · 滚轮缩放</div>
     <div id="p6-hint">战略地图 · 点击城市进入管理 · 「存档」面板使用原版 ac()/oc()</div>
-    <!-- P6 §8.1：阵营图例（颜色是表现层决定，不参与任何判定） -->
-    <div id="p2-legend" aria-label="阵营图例">
-      <span><i class="p2-dot p2-dot-mine"></i>我方</span>
-      <span><i class="p2-dot p2-dot-foe"></i>敌方</span>
-      <span><i class="p2-dot p2-dot-empty"></i>空城</span>
+    <!-- P6 底部操作条：与掌机/原版 zs() 同一套操作，按键直接投递原版键码。
+         阵营图例（P6 §8.1）放在条内：左侧调试面板默认是打开的（p2Panel 默认 true）
+         且从 top 56 一直铺到近底部，浮在左下角的图例会被整块压住、根本看不见。
+         放进操作条的 flex 流里，位置和显隐都跟着操作条走，不会和任何面板打架。 -->
+    <div id="p6-ops" data-p6-ops>
+      <div id="p2-legend" aria-label="阵营图例">
+        <span><i class="p2-dot p2-dot-mine"></i>我方</span>
+        <span><i class="p2-dot p2-dot-foe"></i>敌方</span>
+        <span><i class="p2-dot p2-dot-empty"></i>空城</span>
+      </div>
     </div>
-
-    <!-- P6 底部操作条：与掌机/原版 zs() 同一套操作，按键直接投递原版键码 -->
-    <div id="p6-ops" data-p6-ops></div>
 
     <section id="p1-panel" class="p1-card hidden" data-p1-ui-block>
       <h2>运行状态</h2>
