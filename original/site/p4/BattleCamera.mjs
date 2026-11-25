@@ -1,15 +1,16 @@
 /**
  * P4 BattleCamera —— 战斗相机（薄封装 P1 CameraManager，不重复实现投影/边界）。
  *
- * 与战略地图相机独立配置（P1 CAMERA_CONFIG.battle）：正交投影、固定 45/45、
- * 不允许旋转；本类只补三件战斗场景需要的事：
+ * 与战略地图相机独立配置（P1 CAMERA_CONFIG.battle）：正交投影、固定视角
+ * （P6 起为正面俯视 0°/90°）、不允许旋转；本类只补三件战斗场景需要的事：
  *   1) fit()：按**真实地图宽高**算投影跨度，保证整张地图可见（32x32 也适用）；
  *   2) panByPixels()：把屏幕像素拖动换算到相机 right/up 在地面的基向量；
  *   3) setTargetAt()：进战斗时把注视点对准地图中心（地图中心就是世界原点）。
  */
-import { BATTLE_CAMERA_CONFIG as C } from './config.mjs';
+import { BATTLE_CAMERA_CONFIG as C, BATTLE_TILE_CONFIG } from './config.mjs';
+import { TOP_DOWN_ELEVATION } from '../p1/core/config.mjs';
 
-/** 世界 X/Z 平面在斜视角正交相机屏幕上的投影跨度（单位：格）。 */
+/** 世界 X/Z 平面在正交相机屏幕上的投影跨度（单位：格）。 */
 function projectedSpan(cols, rows, azimuthDeg, elevationDeg) {
   const az = azimuthDeg * Math.PI / 180;
   const el = elevationDeg * Math.PI / 180;
@@ -45,8 +46,12 @@ export class BattleCamera {
     return camera;
   }
 
-  /** 按真实地图宽高调整 frustum；不改 camera.zoom，因此与用户缩放互不干扰。 */
-  fit(camera, aspect, { cols, rows, margin = C.fitMargin } = {}) {
+  /**
+   * 按真实地图宽高调整 frustum；不改 camera.zoom，因此与用户缩放互不干扰。
+   * P6：offsetPx 把投影窗口整体平移（像素），用于避让左侧战斗 HUD——
+   * 这是"投影窗口平移"，不是移动注视点，所以不占平移余量、也不改变逻辑坐标。
+   */
+  fit(camera, aspect, { cols, rows, margin = C.fitMargin, offsetPx = 0, viewportWidth = 0 } = {}) {
     if (!camera || !(aspect > 0)) return null;
     const c = cols || 32, r = rows || 32;
     const span = projectedSpan(c, r, C.azimuthDeg, C.elevationDeg);
@@ -55,8 +60,14 @@ export class BattleCamera {
     camera.bottom = -needed / 2;
     camera.left = -needed * aspect / 2;
     camera.right = needed * aspect / 2;
+    if (offsetPx && viewportWidth > 0) {
+      const worldPerPx = (needed * aspect) / viewportWidth;
+      const dx = offsetPx * worldPerPx;
+      camera.left -= dx;
+      camera.right -= dx;
+    }
     camera.updateProjectionMatrix();
-    this.lastFit = { needed, span, cols: c, rows: r, aspect };
+    this.lastFit = { needed, span, cols: c, rows: r, aspect, offsetPx };
     return this.lastFit;
   }
 
@@ -77,7 +88,20 @@ export class BattleCamera {
     const k = frustum / (Math.max(1, this.viewportHeight) * Math.max(0.0001, camera.zoom || 1));
     const worldDx = -dx * this._right.x * k + dy * this._up.x * k;
     const worldDz = -dx * this._right.z * k + dy * this._up.z * k;
-    return this.cameraManager.pan(camera, worldDx, worldDz);
+    return this.cameraManager.pan(camera, worldDx, worldDz, this._panLimits(camera));
+  }
+
+  /** P6：平移上限 = max(0, 地图半幅 - 当前视野半幅)，避免把战斗地图拖出画面。 */
+  _panLimits(camera) {
+    const cols = this.lastFit ? this.lastFit.cols : 32;
+    const rows = this.lastFit ? this.lastFit.rows : 32;
+    const visW = Math.abs(camera.right - camera.left) / (2 * Math.max(1e-6, camera.zoom || 1));
+    const visH = Math.abs(camera.top - camera.bottom) / (2 * Math.max(1e-6, camera.zoom || 1));
+    const tile = BATTLE_TILE_CONFIG.tileSize;
+    return {
+      x: Math.max(0, (cols * tile) / 2 - visW),
+      z: Math.max(0, (rows * tile) / 2 - visH),
+    };
   }
 
   zoomBy(camera, factor) {
@@ -93,7 +117,8 @@ export class BattleCamera {
     return Object.freeze({
       ...s,
       projection: C.projection,
-      fixed45: s.azimuthDeg === C.azimuthDeg && s.elevationDeg === C.elevationDeg,
+      fixedView: s.azimuthDeg === C.azimuthDeg && s.elevationDeg === C.elevationDeg,
+      topDown: s.elevationDeg >= TOP_DOWN_ELEVATION,
       rotationAllowed: false,
       fit: this.lastFit,
       source: 'P1 CameraManager(battle) + P4 BattleCamera.fit()',

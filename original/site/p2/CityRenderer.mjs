@@ -53,7 +53,7 @@ export class CityRenderer {
   _buildBodyGeometry() {
     return this.assets.geometry('p2:city-body', (THREE) => {
       const parts = [];
-      // 每个部件写入顶点色，合并后仍保留色块差异（增强斜 45° 视角的立体感）
+      // 每个部件写入顶点色，合并后仍保留色块差异（增强立体感）
       const paint = (g, hex) => {
         const col = new THREE.Color(hex);
         const n = g.attributes.position.count;

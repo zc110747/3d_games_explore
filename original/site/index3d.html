@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>三国霸业 · 3D 重制 P5 战棋战斗</title>
+<title>三国霸业 · 3D 重制</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230c0e11'/%3E%3Ctext x='16' y='24' font-size='21' text-anchor='middle' fill='%23e0b04a'%3E%E9%9C%B8%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="p1/style.css">
@@ -11,6 +11,7 @@
 <link rel="stylesheet" href="p3/style.css">
 <link rel="stylesheet" href="p4/style.css">
 <link rel="stylesheet" href="p5/style.css">
+<link rel="stylesheet" href="p6/style.css">
 <script type="importmap">
 {
   "imports": {
@@ -20,27 +21,35 @@
 }
 </script>
 </head>
-<body data-p1-status="booting">
+<!-- P6：默认 menu = 原版 2D 主界面（菜单/选择/操作全部保留，不做 3D 化）；
+     原版进入剧本战略地图（zs() 选城阶段）后才切到 game = 3D。 -->
+<body data-p1-status="booting" data-sango-view="menu">
 
-<!-- ===================== 3D 展示区 ===================== -->
 <div id="p1-root">
+  <!-- ===================== 3D 展示区（仅 game 态可见） ===================== -->
   <div id="p1-stage" aria-label="Three.js 3D 场景"></div>
 
   <!-- ===================== HTML UI 层 ===================== -->
   <div id="p1-ui" data-p1-ui>
     <div id="p1-toolbar">
-      <span class="p1-title">三国霸业 · P5 三维战棋</span>
+      <span class="p1-title">三国霸业 · 三维</span>
+      <span id="p6-king" class="p1-chip">君主 —</span>
+      <span id="p6-turn" class="p1-chip">—</span>
+      <span id="p6-cursor" class="p1-chip">光标 —</span>
       <span id="p1-phase" class="p1-chip">启动中</span>
       <span id="p3-chip" class="p1-chip">城市 UI 待命</span>
       <span id="p4-chip" class="p1-chip">战斗待命</span>
       <span id="p5-chip" class="p1-chip">操作待命</span>
-      <button type="button" class="p1-btn" id="p2-toggle-panel">地图调试</button>
-      <button type="button" class="p1-btn" id="p1-toggle-panel">P1 面板</button>
+      <button type="button" class="p1-btn" id="p2-toggle-panel">调试</button>
+      <button type="button" class="p1-btn" id="p1-toggle-panel">运行状态</button>
       <button type="button" class="p1-btn" id="p1-toggle-legacy">原版画面</button>
     </div>
 
-    <section id="p2-panel" class="p1-card" data-p1-ui-block></section>
-    <div id="p2-hint">3D 战略地图 · 左键拖动 · 滚轮缩放 · 点击城市 = 原版选城（己方城进入城市管理）</div>
+    <section id="p2-panel" class="p1-card hidden" data-p1-ui-block></section>
+    <div id="p2-hint">点击 = 移动原版光标（再点同格 = 确认） · 方向键/WASD 移动 · E 确认 · Q 返回 · 拖动平移 · 滚轮缩放</div>
+
+    <!-- P6 底部操作条：与掌机/原版 zs() 同一套操作，按键直接投递原版键码 -->
+    <div id="p6-ops" data-p6-ops></div>
 
     <section id="p1-panel" class="p1-card hidden" data-p1-ui-block>
       <h2>运行状态</h2>
@@ -79,8 +88,8 @@
     </div>
   </div>
 
-  <!-- ============ 原版 2D 画面（保持原版 DOM，可折叠） ============ -->
-  <div id="p1-legacy" class="hidden">
+  <!-- ============ 原版 2D 界面（menu 态整屏；DOM 与原版 index.html 保持一致） ============ -->
+  <div id="p1-legacy">
     <div id="app">
       <div id="screen-wrap">
         <canvas id="screen" width="240" height="320"></canvas>
@@ -106,8 +115,9 @@
         </div>
         <button class="key" data-key="enter">确认</button>
       </div>
-      <div id="help-note">原版 2D 画面（P1 保留用于对照，游戏规则仍由 sgby.core.js 驱动）</div>
+      <div id="help-note">触摸：轻点选择/确认 · 拖动滚动列表 · 轻点画面跳过动画<br>键盘：<b>W/A/S/D</b> 上左下右 · <b>E</b> 确认 · <b>Q</b> 返回 · 方向键/Enter/Esc 同样可用 · Tab 帮助 · M 形势图</div>
     </div>
+    <div id="p6-menu-hint">进入剧本后自动切换为 3D 战略地图</div>
   </div>
 </div>
 

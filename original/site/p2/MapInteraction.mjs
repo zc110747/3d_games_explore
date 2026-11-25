@@ -15,7 +15,7 @@
 import { MAP_INTERACTION_CONFIG as I } from './config.mjs';
 
 export class MapInteraction {
-  constructor({ THREE, input, adapter, scene, worldCamera, getCamera, isActive = () => true, onCityClick = null }) {
+  constructor({ THREE, input, adapter, scene, worldCamera, getCamera, isActive = () => true, onCityClick = null, onMapClick = null }) {
     if (!THREE || !input || !adapter || !scene || !worldCamera) {
       throw new TypeError('MapInteraction 依赖不完整');
     }
@@ -27,8 +27,13 @@ export class MapInteraction {
     this._getCamera = getCamera || (() => scene.camera);
     this.isActive = isActive;   // 只在战略地图场景响应，避免切到城市场景误操作
     this.onCityClick = onCityClick;   // P3：把命中城市告知城市管理会话（只读通知）
+    // P6：给了 onMapClick 就交出「点击语义」——由 WorldOps 按原版 zs() 处理
+    // （点格移动光标 / 再点同格确认），这里只负责把屏幕坐标解析成逻辑格与城市。
+    this.onMapClick = onMapClick;
     this._raycaster = new THREE.Raycaster();
     this._ndc = new THREE.Vector2();
+    this._plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    this._hit = new THREE.Vector3();
     this._unbind = [];
     this.intent = 'cursor';        // cursor 只定位原版光标；select 触发原版确认选城
     this.selectedCityId = null;
@@ -60,6 +65,22 @@ export class MapInteraction {
       if (!this.isActive()) return;
       this.stats.clicks++;
       const cityId = this.pick(p.ndcX, p.ndcY);
+      // P6：点击语义交给 WorldOps（原版 zs()：点格移光标、再点同格确认）
+      if (typeof this.onMapClick === 'function') {
+        const cell = this.pickCell(p.ndcX, p.ndcY);
+        if (cityId !== null) {
+          this.stats.cityHits++;
+          // 只记录「最后点击命中的城市」，高亮仍由原版光标驱动（WorldOps.refresh）
+          this.selectedCityId = cityId;
+          this.lastClickCityId = cityId;
+        }
+        if (!cell) {
+          this.stats.emptyClicks++;
+          return;
+        }
+        this.onMapClick({ cell, cityId, point: p });
+        return;
+      }
       if (cityId === null) { this.stats.emptyClicks++; return; }
       this.stats.cityHits++;
       this.handleCityClick(cityId);
@@ -89,6 +110,20 @@ export class MapInteraction {
       if (id !== null) return id;
     }
     return null;
+  }
+
+  /** P6：屏幕 NDC -> 原版 12x9 逻辑格（与地面 y=0 求交，再走统一坐标转换）。 */
+  pickCell(ndcX, ndcY) {
+    const cam = this._getCamera();
+    if (!cam) return null;
+    this._ndc.set(ndcX, ndcY);
+    this._raycaster.setFromCamera(this._ndc, cam);
+    if (!this._raycaster.ray.intersectPlane(this._plane, this._hit)) return null;
+    const mapCoordinate = this.scene.mapCoordinate;
+    if (!mapCoordinate) return null;
+    const m = mapCoordinate.worldToMap(this._hit.x, this._hit.z);
+    if (!m || !m.inBounds) return null;
+    return { col: m.col, row: m.row, world: { x: this._hit.x, y: 0, z: this._hit.z } };
   }
 
   /** 城市点击主流程。返回完整的真实结果（含未注入原因），不伪造成功。 */

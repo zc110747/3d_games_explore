@@ -132,13 +132,18 @@ export class GameAdapter {
       input.waitMsg = function (...args) {
         // P2：只读记录「谁在等待输入」。zs()/ei()/Ba() 都是压缩后保留的函数名，
         // 同步调用栈里会出现 `at zs (`。用于避免在主菜单/城市菜单阶段误注入选城输入。
-        // 不改动原版返回值、不改动任何游戏状态。
+        // P6：补充 battle（Uo 战斗主循环）与 menu（Ba 主菜单 / Ma 回合菜单 / Va 开场 /
+        // Ya 菜单绘制 / Ka 选剧本 / za 选君主 / Da 难度）两类，供视图模式判定
+        // 「此刻该显示原版 2D 还是 3D」。只读判断，不改动原版返回值与任何游戏状态。
         let kind = 'unknown';
         try {
           const stack = new Error().stack || '';
           if (/\bat\s+(?:async\s+)?zs\s*\(/.test(stack)) kind = 'zs';
           else if (/\bat\s+(?:async\s+)?ei\s*\(/.test(stack)) kind = 'ei';
-          else if (/\bat\s+(?:async\s+)?Ba\s*\(/.test(stack)) kind = 'menu';
+          // 战斗：P4/P5 接管把 Uo 拆成 UoOrig + Uo，等待输入发生在 ko/bo/Fo 等内部，
+          // 因此这里同时认战斗循环函数名，避免被下面的 menu 规则误判。
+          else if (/\bat\s+(?:async\s+)?(?:Uo|UoOrig|bo|ko|vo|xo|Ao|Fo|Io|Eo|So)\s*\(/.test(stack)) kind = 'battle';
+          else if (/\bat\s+(?:async\s+)?(?:Ba|Ma|Va|Ya|Ka|za|Da)\s*\(/.test(stack)) kind = 'menu';
         } catch (_) { /* 忽略：诊断信息不可用不影响原版逻辑 */ }
         self._waiterKind = kind;
         return Promise.resolve(original.apply(this, args)).then((msg) => {
@@ -1004,9 +1009,76 @@ export class GameAdapter {
     });
   }
 
+  /**
+   * P6：把原版地图光标移到指定逻辑格（12x9，col/setx、row/sety）。
+   *
+   * 与原版点击地图**完全同一条链路**：zs() 只认方向键，所以这里按 (col,row) 差值
+   * 逐格投递 34/35/36/37；不直接写 Dn.g_CityPos，也不碰 citymap。
+   * 只在 zs() 选城阶段注入（其余阶段方向键会被别的协程消费）。
+   */
+  requestCursorTo(col, row, { maxSteps = 26 } = {}) {
+    const phase = this.getInputPhase();
+    if (!phase.canSelectCity) {
+      return freeze({ moved: false, target: freeze({ col, row }), phase,
+        reason: `未注入原版输入：${phase.reason}`, source: 'getInputPhase()' });
+    }
+    if (!Number.isInteger(col) || !Number.isInteger(row)) {
+      throw new TypeError('requestCursorTo 需要整数 col/row');
+    }
+    const cols = this.core.Dn.citymap && this.core.Dn.citymap[0] ? this.core.Dn.citymap[0].length : 12;
+    const rows = this.core.Dn.citymap ? this.core.Dn.citymap.length : 9;
+    if (col < 0 || col >= cols || row < 0 || row >= rows) {
+      return freeze({ moved: false, target: freeze({ col, row }), phase,
+        reason: `逻辑格 (${col},${row}) 超出 ${cols}x${rows}`, source: 'Dn.citymap' });
+    }
+    const cur = this.getCityCursor();
+    const dx = col - cur.setx;
+    const dy = row - cur.sety;
+    const steps = Math.abs(dx) + Math.abs(dy);
+    if (steps === 0) {
+      return freeze({ moved: false, unchanged: true, target: freeze({ col, row }),
+        cursor: cur, messageCount: 0, source: 'getCityCursor()' });
+    }
+    if (steps > maxSteps) {
+      return freeze({ moved: false, target: freeze({ col, row }), steps, phase,
+        reason: `导航步数 ${steps} 超过上限 ${maxSteps}`, source: 'getCityCursor()' });
+    }
+    const k = ORIGINAL_INPUT.keys;
+    const messages = [];
+    for (let n = 0; n < Math.abs(dx); n++) messages.push({ type: ORIGINAL_INPUT.keyType, param: dx > 0 ? k.right : k.left });
+    for (let n = 0; n < Math.abs(dy); n++) messages.push({ type: ORIGINAL_INPUT.keyType, param: dy > 0 ? k.down : k.up });
+    for (const msg of messages) this.sendInput(msg);
+    this.stats.cursorMoves = (this.stats.cursorMoves || 0) + 1;
+    this.stats.injectedMessages += messages.length;
+    return freeze({
+      moved: true, target: freeze({ col, row }), cursorBefore: cur, steps,
+      messageCount: messages.length, messages: freeze(messages.map((m) => freeze(m))),
+      note: '消息已按原版输入协议投递，结果须由 getCityCursor() 事后观测',
+      source: 'class A.pushMsg (L467) + zs() L4290-4305',
+    });
+  }
+
+  /**
+   * P6：投递一次原版按键（方向 / 确认 / 返回 / 帮助 / 形势图）。
+   * 只允许协议内的键码，避免把任意值塞进原版输入队列。
+   */
+  pressKey(param, { requireCitySelect = false } = {}) {
+    const k = ORIGINAL_INPUT.keys;
+    const allowed = new Set([k.up, k.down, k.left, k.right, k.confirm, k.cancel, k.help, k.chart]);
+    if (!allowed.has(param)) throw new RangeError(`非原版操作键码: ${param}`);
+    const phase = this.getInputPhase();
+    if (requireCitySelect && !phase.canSelectCity) {
+      return freeze({ sent: false, param, phase,
+        reason: `未投递：${phase.reason}`, source: 'getInputPhase()' });
+    }
+    this.sendInput({ type: ORIGINAL_INPUT.keyType, param });
+    this.stats.keyPresses = (this.stats.keyPresses || 0) + 1;
+    this.stats.injectedMessages += 1;
+    return freeze({ sent: true, param, phase, source: 'class A.pushMsg (L467)' });
+  }
+
   /** 表现层显式通知选中事件（原版无对应事件源，不伪造「原版发出」）。 */
-  notifyCitySelected(cityId) { this.events.emit(EVENTS.CITY_SELECTED, { cityId, source: 'presentation' }); }
-  notifyUnitSelected(unitId) { this.events.emit(EVENTS.UNIT_SELECTED, { unitId, source: 'presentation' }); }
+  notifyCitySelected(cityId) { this.events.emit(EVENTS.CITY_SELECTED, { cityId, source: 'presentation' }); }  notifyUnitSelected(unitId) { this.events.emit(EVENTS.UNIT_SELECTED, { unitId, source: 'presentation' }); }
 
   // ---------------------------------------------------------- 未接入接口
   selectCity() {

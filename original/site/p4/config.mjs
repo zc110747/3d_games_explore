@@ -114,11 +114,11 @@ export const RANGE_STYLE = Object.freeze({
   source: 'P4 §9/§10：只显示原版 qi()/Vo() 给出的合法格子',
 });
 
-/** 战斗相机：固定斜 45°，正交，禁止旋转；与战略地图参数独立。 */
+/** 战斗相机：正面俯视、正交、禁止旋转；与战略地图参数独立。 */
 export const BATTLE_CAMERA_CONFIG = Object.freeze({
   projection: 'orthographic',
-  azimuthDeg: 45,
-  elevationDeg: 45,
+  azimuthDeg: 0,
+  elevationDeg: 90,
   distance: 46,
   near: 0.1,
   far: 300,
@@ -127,7 +127,7 @@ export const BATTLE_CAMERA_CONFIG = Object.freeze({
   maxZoom: 3.2,
   panLimit: 18,          // 32x32 地图半幅 16，留 2 格余量
   fitMargin: 1.04,       // 整图刚好落在视口内，尽量少留黑边
-  source: 'P4 §4：OrthographicCamera + 固定 45/45，不自由旋转',
+  source: 'P4 §4：OrthographicCamera + 固定视角（P6 起 0°/90° 正面俯视），不自由旋转',
 });
 
 export const BATTLE_INTERACTION_CONFIG = Object.freeze({

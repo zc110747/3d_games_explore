@@ -1,10 +1,13 @@
 /**
- * P1 CameraManager —— 固定斜 45° 正交相机，禁止自由旋转。
+ * P1 CameraManager —— 固定视角正交相机，禁止自由旋转。
  *
  * 逻辑坐标 -> 世界坐标由 CoordinateSystem 负责；这里只负责「相机投影/视图」，
  * 两者不混在一个函数里。城市场景 P1 不锁定渲染方案，默认复用战略相机配置。
+ *
+ * P6：默认视角是"正面俯视"（方位 0°/俯角 90°）。极角退化时把 up 换成 (0,0,-1)，
+ * 否则 up=(0,1,0) 与视线平行，lookAt 求不出有效的右/上基向量。
  */
-import { CAMERA_CONFIG } from './config.mjs';
+import { CAMERA_CONFIG, TOP_DOWN_ELEVATION } from './config.mjs';
 
 export class CameraManager {
   constructor({ THREE }) {
@@ -38,7 +41,10 @@ export class CameraManager {
       state.target.y + distance * Math.sin(el),
       state.target.z + horiz * Math.cos(az),
     );
-    camera.up.set(0, 1, 0);          // 锁定 up，不提供旋转接口
+    // 俯视（视线垂直地面）时不能用 (0,1,0) 当 up：它与视线平行，lookAt 退化。
+    // 改用 (0,0,-1)，使世界 -Z 朝屏幕上方、+Z 朝下，与原版地图"行号向下增大"一致。
+    if (elevationDeg >= TOP_DOWN_ELEVATION) camera.up.set(0, 0, -1);
+    else camera.up.set(0, 1, 0);       // 锁定 up，不提供旋转接口
     camera.lookAt(state.target);
     camera.zoom = state.zoom;
     camera.updateProjectionMatrix();
@@ -55,11 +61,16 @@ export class CameraManager {
     camera.updateProjectionMatrix();
   }
 
-  /** 平移：同时移动相机与注视点，受边界限制；不允许旋转。 */
-  pan(camera, dx, dz) {
+  /**
+   * 平移：同时移动相机与注视点，受边界限制；不允许旋转。
+   * limits 可覆盖配置里的 panLimitX/panLimitZ（P6：按"地图边界 - 视野边界"
+   * 动态收敛，保证整图可见时拖不出画面）。
+   */
+  pan(camera, dx, dz, limits = null) {
     const state = this._state.get(camera);
     if (!state) return false;
-    const { panLimitX, panLimitZ } = state.cfg;
+    const panLimitX = limits && limits.x !== undefined ? limits.x : state.cfg.panLimitX;
+    const panLimitZ = limits && limits.z !== undefined ? limits.z : state.cfg.panLimitZ;
     const nx = Math.max(-panLimitX, Math.min(panLimitX, state.target.x + dx));
     const nz = Math.max(-panLimitZ, Math.min(panLimitZ, state.target.z + dz));
     state.target.set(nx, 0, nz);
@@ -99,6 +110,7 @@ export class CameraManager {
       zoom: s.zoom,
       elevationDeg: s.cfg.elevationDeg,
       azimuthDeg: s.cfg.azimuthDeg,
+      topDown: s.cfg.elevationDeg >= TOP_DOWN_ELEVATION,
       target: s.target.toArray(),
     };
   }

@@ -28,6 +28,9 @@ import { P4_VERSION } from '../p4/config.mjs';
 import { createBattleOps } from '../p5/boot.mjs';
 import { P5_VERSION, PHASES } from '../p5/config.mjs';
 import { splitMenuByRect } from '../p5/BattleFlowController.mjs';
+import { ViewMode } from '../p6/ViewMode.mjs';
+import { WorldOps } from '../p6/WorldOps.mjs';
+import { VIEW_MODE, P6_VERSION } from '../p6/config.mjs';
 
 const $ = (id) => document.getElementById(id);
 const logEl = $('p1-log');
@@ -73,7 +76,6 @@ function makeSuite(name) {
 async function boot() {
   const stage = $('p1-stage');
   const uiRoot = $('p1-ui');
-  const legacy = $('p1-legacy');
   const panel = $('p1-panel');
   const phaseEl = $('p1-phase');
   const statusList = $('p1-status-list');
@@ -88,6 +90,8 @@ async function boot() {
   let cityManager = null;
   let battleManager = null;
   let battleOps = null;
+  let viewMode = null;
+  let worldOps = null;
   let scenesReady = false;   // 防止 RenderManager 构造期 resize 访问尚未初始化的 scenes
 
   const events = new EventManager();
@@ -147,6 +151,7 @@ async function boot() {
     const inp = input.getStats();
     const rows = [
       ['Three.js 版本', THREE_VERSION],
+      ['视图模式(P6)', viewMode ? `${viewMode.mode}（kind=${viewMode.stats.lastKind}）` : '—'],
       ['内核桥接', core ? `${core.version} / ${core.source}` : '未就绪'],
       ['原版 Dn / lib', coreReady ? '已连接' : '等待资源包…'],
       ['真实城市数', gs ? String(gs.cityCount) : '—'],
@@ -168,7 +173,9 @@ async function boot() {
       ['P2 地形', mapScene?.getDiagnostics()?.terrain?.degraded ? '降级占位' : '原版 108 帧图块'],
       ['P2 选中城市', interaction?.selectedCityId === null || !interaction
         ? '未选中' : `#${interaction.selectedCityId}`],
-      ['P2 原版联动', interaction ? interaction.intent : '—'],
+      ['P6 点击/移光标/确认', worldOps
+        ? `${worldOps.stats.clicks} / ${worldOps.stats.moved} / ${worldOps.stats.confirms}（拒绝 ${worldOps.stats.rejected}）`
+        : '—'],
       ['P3 城市会话', cityManager ? (cityManager.session.cityLoop
         ? `原版 ka() 中 · 城 #${cityManager.session.cityId ?? '—'}` : '未进入（原版未调用 ka()）') : '—'],
       ['P3 城市界面', cityManager && cityManager.ui.isOpen ? `已打开（城 #${cityManager.ui.cityId}）` : '关闭'],
@@ -245,6 +252,10 @@ async function boot() {
     }
     if (debugPanel && mapScene && coreReady) {
       try { refreshDebug(); } catch (e) { /* 状态切换瞬间忽略 */ }
+    }
+    // P6：操作条只属于「3D 战略地图」——城市管理/战斗界面各有自己的按钮
+    if (worldOps && viewMode) {
+      worldOps.setActive(viewMode.mode === VIEW_MODE.GAME && scenes.currentId === SCENE_IDS.WORLD);
     }
   }
 
@@ -499,11 +510,12 @@ async function boot() {
       if (diag.terrain.frames !== 108) throw new Error(`实际 ${diag.terrain.frames} 帧`);
       return `108 帧 / ${diag.terrain.props} 装饰体`;
     });
-    p2.check('固定斜 45° 正交相机且禁旋转', () => {
+    p2.check('正面俯视正交相机且禁旋转', () => {
       const c = diag.camera;
-      if (!c || !c.fixed45 || c.projection !== 'orthographic' || c.rotationAllowed !== false) {
+      if (!c || !c.fixedView || c.projection !== 'orthographic' || c.rotationAllowed !== false) {
         throw new Error(JSON.stringify(c));
       }
+      if (c.topDown !== true) throw new Error(`俯角 ${c.elevationDeg}° 不是俯视`);
       return `${c.azimuthDeg}°/${c.elevationDeg}° zoom=${c.zoom.toFixed(2)}`;
     });
     p2.check('逻辑坐标 → 原版虚拟屏坐标可逆', () => {
@@ -640,7 +652,7 @@ async function boot() {
       if (d.tiles.histogram[5] < 1) throw new Error('地形直方图缺少城池格');
       if (d.units.built !== 20) throw new Error(`部队槽位 ${d.units.built}`);
       if (d.units.visible < 1) throw new Error('没有可见部队');
-      if (!d.camera || d.camera.fixed45 !== true || d.camera.rotationAllowed !== false) {
+      if (!d.camera || d.camera.fixedView !== true || d.camera.rotationAllowed !== false) {
         throw new Error(JSON.stringify(d.camera));
       }
       return `${d.map.width}x${d.map.height} / ${d.tiles.frames} 帧 / 部队 ${d.units.visible}`
@@ -739,6 +751,55 @@ async function boot() {
     return { pass, fail, suites };
   }
 
+  /**
+   * P6：视图切换的唯一副作用入口。
+   * menu：只显示原版 2D（主菜单/选剧本/选君主/回合菜单），暂停 3D 渲染省电。
+   * game：显示 3D 与 HUD，重新取景，并把城市/旗帜按原版最新数据全量同步一次。
+   * 这里不写任何游戏状态，也不改变原版协程。
+   */
+  function applyView(mode, info = {}) {
+    const isGame = mode === VIEW_MODE.GAME;
+    const kind = info.phase && info.phase.kind ? info.phase.kind : '—';
+    log(`[P6] 视图 -> ${mode}（kind=${kind}${info.force ? ' · 强制' : ''}）`);
+    if (isGame) {
+      renderManager.resume();
+      renderManager.resize();
+      // 战斗中不要动场景/相机：P4 已经接管 battle 场景，切回 world 会让 3D 装载半途而废
+      const inBattle = !!(battleManager && battleManager.getStatus().active);
+      // 进入 3D 时把相机复位到"整图可见"：菜单阶段可能遗留缩放/平移，
+      // 不复位会让玩家一进剧本就看到地图边缘甚至空画面。
+      if (!inBattle && mapScene && mapScene.camera && worldCamera) worldCamera.reset(mapScene.camera);
+      if (!inBattle && scenesReady && scenes.currentId !== SCENE_IDS.WORLD) {
+        try { scenes.switchTo(SCENE_IDS.WORLD, { reason: 'P6 进入剧本' }); }
+        catch (e) { log(`[P6] 切回战略地图失败：${e.message}`); }
+      }
+      const n = syncAllVisuals();
+      log(`[P6] 进入 3D 前全量同步：${n} 城（旗帜/城市归属按原版最新数据）`);
+    } else {
+      // 主菜单阶段不需要持续渲染（省电），但要保留至少一帧，
+      // 让 WebGL 可用性与 drawCall 统计仍然可验证（P6 起 3D 层默认隐藏）。
+      renderManager.resume();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (viewMode && viewMode.mode === VIEW_MODE.GAME) return;   // 已切回 3D
+        renderManager.pause();
+      }));
+    }
+    if (worldOps) worldOps.setActive(isGame && scenes.currentId === SCENE_IDS.WORLD);
+    renderStatus();
+  }
+
+  /** 菜单阶段城市数据可能已变（读档/新局），进入 3D 时按原版实时数据重建表现。 */
+  function syncAllVisuals() {
+    if (!mapScene) return 0;
+    if (mapScene.flagRenderer) mapScene.flagRenderer.syncAll();
+    let n = 0;
+    try {
+      for (const c of adapter.getCities()) { if (mapScene.refreshCity(c.id)) n++; }
+    } catch (e) { log(`[P6] 城市同步异常：${e.message}`); }
+    try { mapScene.setSelection(null); } catch (_) { /* 忽略 */ }
+    return n;
+  }
+
   /** 场景切换（测试入口，明确不伪造游戏操作结果）。 */
   function switchScene(id) {
     try {
@@ -761,12 +822,6 @@ async function boot() {
     root: p2Panel,
     callbacks: {
       onInspect: (id) => log(`查看城市 #${id}（仅调试查看，不触发任何原版操作）`),
-      onToggleIntent: () => {
-        if (!interaction) return;
-        const next = interaction.setIntent(interaction.intent === 'cursor' ? 'select' : 'cursor');
-        log(`原版联动模式 -> ${next}${next === 'select' ? '（确认选城会进入原版菜单）' : ''}`);
-        refreshDebug();
-      },
       onResetCamera: () => {
         if (mapScene?.camera) worldCamera.reset(mapScene.camera);
         log('相机复位');
@@ -788,8 +843,17 @@ async function boot() {
   $('p2-toggle-panel').addEventListener('click', () => p2Panel.classList.toggle('hidden'));
   $('p1-toggle-panel').addEventListener('click', () => panel.classList.toggle('hidden'));
   $('p1-toggle-legacy').addEventListener('click', () => {
-    legacy.classList.toggle('hidden');
-    log(`原版 2D 画面：${legacy.classList.contains('hidden') ? '隐藏' : '显示'}`);
+    if (!viewMode) return;
+    if (viewMode.held) {
+      viewMode.setHold(false);
+      viewMode.poll();
+      log('[P6] 恢复自动视图判定（2D 主界面 ↔ 3D 剧本）');
+      return;
+    }
+    viewMode.setHold(true);
+    const next = viewMode.mode === VIEW_MODE.GAME ? VIEW_MODE.MENU : VIEW_MODE.GAME;
+    viewMode.force(next);
+    log(`[P6] 手动对照视图 -> ${next}（自动判定已暂停，再点一次恢复）`);
   });
   for (const btn of document.querySelectorAll('[data-scene]')) {
     btn.addEventListener('click', () => switchScene(btn.dataset.scene));
@@ -827,9 +891,11 @@ async function boot() {
   interaction = new MapInteraction({
     THREE, input, adapter, scene: mapScene, worldCamera,
     getCamera: () => mapScene.camera,
-    isActive: () => scenes.currentId === SCENE_IDS.WORLD,
+    isActive: () => scenes.currentId === SCENE_IDS.WORLD && (!viewMode || viewMode.mode === VIEW_MODE.GAME),
     // P3：只读通知城市会话「用户点了哪个城」，供选目标城市等场景使用
     onCityClick: (cityId) => { if (cityManager) cityManager.session.noteClickedCity(cityId); },
+    // P6：点击语义改由 WorldOps 按原版 zs() 处理（点格移动光标 / 再点同格确认）
+    onMapClick: (hit) => { if (worldOps) worldOps.handleMapClick(hit); },
   });
   interaction.bind();
   cityManager = createCityManager({
@@ -849,8 +915,29 @@ async function boot() {
     log: (msg) => log(`[P5] ${msg}`),
   });
   log(`P5 战斗操作已装配：接管 ${core.p5 ? core.p5.widgetNames.join(' / ') : '（内核无 p5，操作仍在 2D）'}`);
-  log('提示：点「原版画面」在主菜单开新局，进入剧本后点击己方城市即可打开城市管理');
+
+  // ---------------------------------------------------------- P6 视图模式 + 3D 主界面操作
+  worldOps = new WorldOps({
+    THREE, adapter, input, scene: mapScene, coordinate: mapCoordinate,
+    worldCamera, cityManager,
+    opsHost: $('p6-ops'),
+    log: (msg) => log(`[P6] ${msg}`),
+  });
+  worldOps.start();
+  viewMode = new ViewMode({
+    adapter,
+    onChange: applyView,
+    // 兜底：原版战斗一旦装载（P4 active），任何 kind 都不许切回 2D
+    guardGame: () => !!(battleManager && battleManager.getStatus().active),
+  });
+  viewMode.start();
+  log(`P6 视图模式已装配：默认 ${viewMode.mode}（原版主界面不 3D 化），进入剧本 zs() 后切 3D`);
+
+  log('提示：主菜单/选剧本/选君主都在原版 2D 界面完成；进入剧本后自动切换 3D，点格移动光标、再点同格确认');
   renderManager.resize();           // 触发 worldCamera.fit，保证整图可见
+  // 原版在 DOMContentLoaded 时算过一次整数倍缩放，此时 p1/p6 样式可能还没生效；
+  // 主动派发一次 resize 让它按最终布局重算（等价于用户拉一下窗口）。
+  try { window.dispatchEvent(new Event('resize')); } catch (_) { /* 忽略 */ }
   renderStatus();
 
   const smoke = await runSmoke();
@@ -1008,6 +1095,36 @@ async function boot() {
       ui.closeMenu(index, 'test');
       return true;
     },
+    runSmoke,
+    switchScene,
+  });
+
+  /**
+   * P6 视图/操作调试入口。
+   * 注意：setView 只切显示，不改变原版流程；pressKey/cursorTo 走原版输入协议。
+   */
+  window.__P6__ = Object.freeze({
+    version: P6_VERSION,
+    get view() { return viewMode; },
+    get ops() { return worldOps; },
+    getSnapshot: () => ({
+      view: viewMode ? { mode: viewMode.mode, held: viewMode.held, stats: { ...viewMode.stats } } : null,
+      ops: worldOps ? worldOps.getSnapshot() : null,
+      bodyView: document.body.dataset.sangoView,
+      opsHidden: !!(document.getElementById('p6-ops') && document.getElementById('p6-ops').hidden),
+    }),
+    /** 调试：钉住某个视图（hold=true 时暂停自动判定）。 */
+    setView: (mode, hold = false) => {
+      if (!viewMode) return null;
+      if (hold) viewMode.setHold(true);
+      return viewMode.force(mode);
+    },
+    release: () => { if (!viewMode) return null; viewMode.setHold(false); return viewMode.poll(); },
+    pressKey: (param) => adapter.pressKey(param),
+    cursorTo: (col, row) => adapter.requestCursorTo(col, row),
+    /** 3D 语义的点击（供自动化测试直接调用，等价于真实鼠标点格子）。 */
+    clickCell: (col, row) => (worldOps ? worldOps.handleMapClick({ cell: { col, row } }) : null),
+    refresh: () => { if (worldOps) worldOps.refresh(); },
     runSmoke,
     switchScene,
   });

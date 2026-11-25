@@ -1,6 +1,6 @@
 @echo off
 rem ===========================================================================
-rem  Sango Ba Ye 3D remake - one click launcher (P3)
+rem  Sango Ba Ye 3D remake - one click launcher (P6)
 rem
 rem  What it does:
 rem    1) checks Node.js / project files
@@ -25,7 +25,7 @@ if not exist "server\server.mjs" goto :no_server
 if not exist "site\index3d.html" goto :no_site
 
 echo ==========================================================
-echo   Sango Ba Ye - 3D remake (P3 city management)
+echo   Sango Ba Ye - 3D remake (P6: 2D menu -> 3D top-down map)
 echo ----------------------------------------------------------
 echo   URL   : %URL%
 echo   Root  : %CD%
