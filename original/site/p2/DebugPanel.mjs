@@ -22,7 +22,7 @@ export class DebugPanel {
       <h2>选中 / 原版联动</h2>
       <dl id="p2-selection-info" class="p1-kv"></dl>
       <div class="p2-row">
-        <button type="button" class="p1-btn" id="p2-intent">原版联动：仅定位光标</button>
+        <span class="p1-hint" id="p2-intent">点击语义：原版 zs()（点格移光标 / 再点同格确认）</span>
         <button type="button" class="p1-btn" id="p2-reset-cam">相机复位</button>
       </div>
       <div class="p2-row">
@@ -44,7 +44,6 @@ export class DebugPanel {
       c.onInspect?.(this.inspectId);
       this.update(this._last);
     });
-    this.root.querySelector('#p2-intent').addEventListener('click', () => c.onToggleIntent?.());
     this.root.querySelector('#p2-reset-cam').addEventListener('click', () => c.onResetCamera?.());
     this.root.querySelector('#p2-run-tests').addEventListener('click', () => c.onRunTests?.());
     this.root.querySelector('#p2-sync').addEventListener('click', () => c.onSync?.());
@@ -120,15 +119,10 @@ export class DebugPanel {
     dr.push($row('旗帜 / 势力', `${d.flags?.flags ?? '—'} / ${d.flags?.factionCount ?? '—'}`));
     dr.push($row('地形来源', d.terrain?.degraded ? '降级占位（非原版）' : `原版图块 ${d.terrain?.frames} 帧`,
       d.terrain?.degraded ? 'bad' : 'ok'));
-    dr.push($row('相机', cam.fixed45 ? '固定斜 45°（禁旋转）' : '未知', cam.fixed45 ? 'ok' : 'bad'));
+    dr.push($row('相机', cam.fixedView ? `正面俯视 ${cam.azimuthDeg}°/${cam.elevationDeg}°（禁旋转）` : '未知', cam.fixedView ? 'ok' : 'bad'));
     dr.push($row('缩放 / 注视点', `${fmt(cam.zoom, 2)} / [${(cam.target || []).map((v) => fmt(v, 1)).join(', ')}]`));
     dr.push($row('输入 点击/命中/拖动', `${s.input?.clicks ?? 0} / ${s.input?.cityHits ?? 0} / ${s.input?.drags ?? 0}`));
     dr.push($row('事件订阅数', String(d.subscriptions ?? 0)));
     this.root.querySelector('#p2-scene-info').innerHTML = dr.join('');
-
-    const btn = this.root.querySelector('#p2-intent');
-    if (btn) btn.textContent = s.intent === 'select'
-      ? '原版联动：确认选城（会进入原版菜单）'
-      : '原版联动：仅定位光标';
   }
 }

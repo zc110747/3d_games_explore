@@ -103,7 +103,11 @@ export class FlagRenderer {
 
       const cloth = new THREE.Mesh(clothGeo, this._material(city.ownerId, player));
       cloth.name = `p2-flag-${city.id}`;
-      cloth.position.set(px, p.y + F.poleHeight * 0.78, pz);
+      // P6：视角是正面俯视，竖直旗布从正上方只能看到一条边。
+      // 因此旗布改为水平铺在杆顶（rotation.x = -90°），俯视时是一面完整的势力色旗；
+      // 飘动仍只改 rotation.z（水平面内的摆角），不改变旗布朝向。
+      cloth.rotation.set(-Math.PI / 2, 0, 0);
+      cloth.position.set(px, p.y + F.poleHeight * 1.02, pz);
       cloth.userData = {
         cityId: city.id, kind: 'flag', ownerId: city.ownerId,
         phase: (stableHash(`flagPhase:${city.id}`) % 628) / 100,
@@ -139,12 +143,12 @@ export class FlagRenderer {
     return this._cloths.size;
   }
 
-  /** 简单飘动：绕旗杆摆动，共享几何体，不每帧重建。 */
+  /** 简单飘动：绕竖直轴摆动（旗布水平，见 build()），共享几何体，不每帧重建。 */
   update(dt, cameraZoom = 1) {
     this._elapsed += dt;
     const amp = F.waveAmplitude * Math.max(0.5, Math.min(2, cameraZoom));
     for (const cloth of this._cloths.values()) {
-      cloth.rotation.y = Math.sin(this._elapsed * F.waveSpeed + cloth.userData.phase) * amp * 12;
+      cloth.rotation.z = Math.sin(this._elapsed * F.waveSpeed + cloth.userData.phase) * amp * 12;
     }
   }
 

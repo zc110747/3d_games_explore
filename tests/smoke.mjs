@@ -106,6 +106,7 @@ try {
   edge = spawn(EDGE, [
     '--headless=new',
     '--no-first-run', '--no-default-browser-check', '--no-sandbox',
+    '--window-size=1280,900',
     `--user-data-dir=${tmpProfile}`,
     `--remote-debugging-port=${DEVTOOLS_PORT}`,
     '--remote-allow-origins=*',
@@ -130,7 +131,9 @@ try {
     if (msg.id && pending.has(msg.id)) {
       const { resolve } = pending.get(msg.id); pending.delete(msg.id); resolve(msg);
     } else if (msg.method === 'Runtime.exceptionThrown') {
-      exceptions.push(msg.params.exceptionDetails?.text || 'unknown');
+      const d = msg.params.exceptionDetails || {};
+      const detail = d.exception?.description || d.exception?.value || d.text || 'unknown';
+      exceptions.push(String(detail).split('\n').slice(0, 4).join(' | '));
     } else if (msg.method === 'Log.entryAdded' && msg.params.entry.level === 'error') {
       consoleErrors.push(`${msg.params.entry.text} [${msg.params.entry.url || ''}]`);
     }
@@ -181,6 +184,48 @@ try {
     !pageLog.includes('启动失败：') && exceptions.length === 0,
     `exceptions=${exceptions.length}, consoleErrors=${consoleErrors.length}`);
 
+  // ==================================================================
+  // P6：默认必须停在原版 2D 主界面（菜单/选择不做 3D 化）
+  // ==================================================================
+  const defaultView = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const vis = (id) => {
+      const el = document.getElementById(id);
+      return !!el && getComputedStyle(el).display !== 'none';
+    };
+    const legacyCanvas = document.getElementById('screen');
+    return {
+      body: document.body.dataset.sangoView,
+      legacy: vis('p1-legacy'), stage: vis('p1-stage'), ui: vis('p1-ui'),
+      canvas: !!legacyCanvas && legacyCanvas.width === 240 && legacyCanvas.height === 320,
+      ops: window.__P6__ ? window.__P6__.getSnapshot() : null,
+    };
+  })())`));
+  check('默认进入原版 2D 主界面（主菜单/选择不 3D 化）',
+    defaultView.body === 'menu' && defaultView.legacy === true
+    && defaultView.stage === false && defaultView.ui === false
+    && defaultView.ops?.view?.mode === 'menu',
+    `body=${defaultView.body} legacy=${defaultView.legacy} stage=${defaultView.stage} ui=${defaultView.ui}`);
+  check('原版 240x320 画布仍在驱动游戏（未改动原版界面）',
+    defaultView.canvas === true);
+  check('菜单阶段 3D 操作条不存在（不干扰原版操作）',
+    defaultView.ops?.opsHidden === true || defaultView.stage === false,
+    `opsHidden=${defaultView.ops?.opsHidden}`);
+
+  // 主界面（原版 2D）截图：用于目视核对「菜单/选择未被 3D 化」。
+  // 浏览器以 1280x900 启动，原版整数倍缩放会给出完整可操作界面。
+  await send('Page.enable');
+  const menuShot = await send('Page.captureScreenshot', { format: 'png' });
+  const menuShotPath = path.join(os.tmpdir(), 'sgby-p6-main-menu.png');
+  fs.writeFileSync(menuShotPath, Buffer.from(menuShot.result.data, 'base64'));
+  check('原版主界面截图已生成（2D 菜单）', fs.statSync(menuShotPath).size > 8000, menuShotPath);
+
+  // 原版未处于 zs() 选城阶段时，必须拒绝注入输入（不伪造成功）——只在菜单阶段可验证
+  const menuPhase = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getInputPhase())'));  const menuReq = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.requestCitySelection(0, { intent: "cursor" }))'));
+  check('原版不在选城阶段时拒绝注入输入（如实标注）',
+    menuPhase.canSelectCity === false && menuReq.injected === false,
+    `${menuPhase.reason} / ${menuReq.reason}`);
+
+
   // 浏览器内实际切换三个场景（测试入口，不代表真实游戏操作结果）
   const flow = [];
   for (const id of ['city', 'world', 'battle', 'world']) {
@@ -206,6 +251,46 @@ try {
   await sleep(700);
   const sizeAfter = await evaluate('JSON.stringify(window.__P1__.getStatus().renderer.size)');
   check('窗口尺寸变化自动调整', sizeBefore !== sizeAfter, `${sizeBefore} -> ${sizeAfter}`);
+
+  // ==================================================================
+  // P6：脚本化开局（只在临时浏览器进程内推进原版流程）
+  //     验证「进入剧本 -> 自动切 3D」，之后所有 3D 断言都在 game 视图下跑
+  // ==================================================================
+  let bootSteps = 0;
+  let openState = null;
+  for (; bootSteps < 12; bootSteps++) {
+    const s = JSON.parse(await evaluate(`JSON.stringify({
+      year: window.__SGBY_CORE__.Dn.g_YearDate,
+      phase: window.__P2__.adapter.getInputPhase()
+    })`));
+    openState = s;
+    if (s.year > 0 && s.phase.canSelectCity) break;
+    await evaluate('window.__P2__.adapter.sendInput({ type: 5, param: 39 })');
+    await sleep(450);
+  }
+  const opened = openState?.year > 0 && openState?.phase?.canSelectCity === true;
+  check('脚本化真实开局后原版进入 zs() 选城阶段', opened,
+    `按键 ${bootSteps} 次 / year=${openState?.year} / kind=${openState?.phase?.kind} / waiting=${openState?.phase?.waiting}`);
+
+  const switched = await waitFor(async () => {
+    const v = await evaluate('document.body.dataset.sangoView');
+    return v === 'game' ? v : null;
+  }, 8000, 'P6 自动切换 3D 视图').catch(() => null);
+  const bodyView = await evaluate('document.body.dataset.sangoView');
+  check('进入剧本后自动切换 3D 战略地图', switched === 'game', `body=${bodyView}`);
+  const gameView = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const vis = (id) => { const el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none'; };
+    return {
+      legacy: vis('p1-legacy'), stage: vis('p1-stage'), ui: vis('p1-ui'),
+      opsButtons: document.querySelectorAll('#p6-ops .p6-key').length,
+      opsHidden: document.getElementById('p6-ops')?.hidden,
+    };
+  })())`));
+  check('3D 视图下原版 2D 层隐藏、原版操作条就绪',
+    gameView.legacy === false && gameView.stage === true && gameView.ui === true
+    && gameView.opsButtons >= 8 && gameView.opsHidden === false,
+    `legacy=${gameView.legacy} stage=${gameView.stage} 按键=${gameView.opsButtons} hidden=${gameView.opsHidden}`);
+  await sleep(600);   // 等 resize/fit 完成后再取画布矩形
 
   // ==================================================================
   // P2 战略地图：真实鼠标交互 / 拾取 / 相机 / 状态同步 / 截图
@@ -236,9 +321,9 @@ try {
     d2.cities.cityCount === 38 && d2.roads.edges === 54
     && d2.flags.flags === 38 && d2.terrain.frames === 108 && !d2.terrain.degraded,
     `城${d2.cities.cityCount} 路${d2.roads.edges} 旗${d2.flags.flags} 地形帧${d2.terrain.frames}`);
-  check('P2 固定斜 45° 正交相机（禁旋转）',
-    d2.camera.fixed45 === true && d2.camera.projection === 'orthographic'
-    && d2.camera.rotationAllowed === false,
+  check('P2 正面俯视正交相机（0°/90°，禁旋转）',
+    d2.camera.fixedView === true && d2.camera.topDown === true
+    && d2.camera.projection === 'orthographic' && d2.camera.rotationAllowed === false,
     `${d2.camera.azimuthDeg}°/${d2.camera.elevationDeg}°`);
 
   const candidates = JSON.parse(await evaluate(`JSON.stringify((() => {
@@ -336,13 +421,6 @@ try {
     ownerTest.changed && ownerTest.restored,
     `材质切换=${ownerTest.changed} 分类=${ownerTest.kind} 已恢复=${ownerTest.restored}`);
 
-  // 原版未处于 zs() 选城阶段时，必须拒绝注入输入（不伪造成功）
-  const phase = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getInputPhase())'));
-  const req = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.requestCitySelection(0, { intent: "cursor" }))'));
-  check('原版不在选城阶段时拒绝注入输入（如实标注）',
-    phase.canSelectCity === false && req.injected === false,
-    `${phase.reason} / ${req.reason}`);
-
   const visualDiag = await evaluate(`JSON.stringify((() => {
     const c = window.__P2__.mapScene.cityRenderer;
     const item = c._labels.get(0), s = item && item.sprite;
@@ -373,23 +451,7 @@ try {
   fs.writeFileSync(shotPath, Buffer.from(shot.result.data, 'base64'));
   check('3D 战略地图截图已生成', fs.statSync(shotPath).size > 10000, shotPath);
 
-  // ---- 真实开局：验证「3D 点击 -> 原版 zs() 选城输入协议」确实可用 ----
-  // 只在临时浏览器进程内推进原版流程（不写仓库文件、不写存档、不改任何规则）。
-  let bootSteps = 0;
-  let openState = null;
-  for (; bootSteps < 12; bootSteps++) {
-    const s = JSON.parse(await evaluate(`JSON.stringify({
-      year: window.__SGBY_CORE__.Dn.g_YearDate,
-      phase: window.__P2__.adapter.getInputPhase()
-    })`));
-    openState = s;
-    if (s.year > 0 && s.phase.canSelectCity) break;
-    await evaluate('window.__P2__.adapter.sendInput({ type: 5, param: 39 })');
-    await sleep(450);
-  }
-  const opened = openState?.year > 0 && openState?.phase.canSelectCity === true;
-  check('脚本化真实开局后原版进入 zs() 选城阶段', opened,
-    `按键 ${bootSteps} 次 / year=${openState?.year} / kind=${openState?.phase?.kind} / waiting=${openState?.phase?.waiting}`);
+  // ---- 原版输入协议驱动光标（低层接口，仍走 pushMsg；开局已在 P6 段完成）
   if (opened) {
     const cur = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getCityCursor())'));
     const city = JSON.parse(await evaluate(`JSON.stringify((() => {
@@ -403,6 +465,45 @@ try {
       req.injected === true && after.setx === city.position.x && after.sety === city.position.y,
       `目标 #${city.id}(${city.position.x},${city.position.y}) 投递 ${req.messageCount ?? 0} 键 -> 原版光标 (${after.setx},${after.sety}) 城 #${after.cityId ?? '—'}`);
   }
+
+  // ==================================================================
+  // P6：底部「信息 / 查找」是原版画在 2D 画布上的全屏页 —— 3D 视图下临时切回 2D
+  // ==================================================================
+  const peekClicked = await evaluate(`(() => {
+    const b = [...document.querySelectorAll('#p6-ops .p6-key')].find((x) => x.dataset.p6Key === '51');
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  await sleep(700);
+  const peekState = JSON.parse(await evaluate(`JSON.stringify({
+    body: document.body.dataset.sangoView,
+    hint: !document.getElementById('p6-peek-hint')?.hidden,
+    peeking: window.__P6__.getSnapshot().ops?.peeking,
+    stage: getComputedStyle(document.getElementById('p1-stage')).display !== 'none'
+  })`));
+  check('「查找」按钮打开原版形势图（临时切回原版 2D 画面）',
+    peekClicked === true && peekState.body === 'menu' && peekState.hint === true
+    && peekState.peeking === true && peekState.stage === false,
+    `body=${peekState.body} hint=${peekState.hint} peeking=${peekState.peeking}`);
+
+  // 任意键返回：原版 zs() 在帮助/形势图状态里「任意键」只是退出该页，不会返回上层
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'q', code: 'KeyQ', windowsVirtualKeyCode: 81, nativeVirtualKeyCode: 81,
+  });
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'q', code: 'KeyQ', windowsVirtualKeyCode: 81, nativeVirtualKeyCode: 81,
+  });
+  await sleep(900);
+  const peekBack = JSON.parse(await evaluate(`JSON.stringify({
+    body: document.body.dataset.sangoView,
+    hint: !document.getElementById('p6-peek-hint')?.hidden,
+    phase: window.__P2__.adapter.getInputPhase().kind,
+    peeking: window.__P6__.getSnapshot().ops?.peeking
+  })`));
+  check('任意键关闭原版画面并回到 3D 地图',
+    peekBack.body === 'game' && peekBack.hint === false && peekBack.peeking === false,
+    `body=${peekBack.body} hint=${peekBack.hint} phase=${peekBack.phase}`);
 
   // ==================================================================
   // P3 城市管理：真实点击己方城市 -> HTML 界面 -> 原版 mi() 执行 -> 数值真变
@@ -433,6 +534,35 @@ try {
   const p3Ready = await evaluate('!!window.__P3__');
   check('P3 调试接口就绪', p3Ready === true);
   const p3Boot = await p3Status();
+  const p3Diag = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const a = window.__P2__.adapter;
+    const gs = a.getGameState();
+    const cities = a.getCities();
+    return {
+      playerKing: gs.playerKing, year: gs.year, month: gs.month,
+      cityCount: cities.length,
+      owners: [...new Set(cities.map((c) => c.ownerId))],
+      ownedByPlayer: cities.filter((c) => c.ownerId === gs.playerKing + 1).length,
+      playerCities: cities.filter((c) => c.ownerId === gs.playerKing + 1).map((c) => {
+        const s = window.__P2__.cityScreenPosition(c.id, window.__P2__.mapScene ? {
+          left: 0, top: 0, width: innerWidth, height: innerHeight } : null);
+        return { id: c.id, name: c.name, pos: { x: c.position.x, y: c.position.y },
+          screen: s ? { x: Math.round(s.x), y: Math.round(s.y), visible: s.visible } : null };
+      }),
+      phase: a.getInputPhase(),
+      scene: window.__P1__.getStatus().scenes.current,
+      cam: (() => {
+        const c = window.__P2__.mapScene.camera;
+        const st = window.__P2__.cameraManager.getState(c);
+        const lim = window.__P2__.worldCamera._panLimits(c);
+        return { target: st.target, zoom: st.zoom, left: c.left, right: c.right, top: c.top, bottom: c.bottom, lim,
+          sameAsCurrent: c === window.__P1__.scenes.current?.camera };
+      })(),
+      body: document.body.dataset.sangoView,
+      p3: window.__P3__.getStatus(),
+    };
+  })())`));
+  console.log('\n--- P3 诊断 ---\n' + JSON.stringify(p3Diag));
   check('P3 接管点 7 个已导出', p3Boot.widgets.length === 7, p3Boot.widgets.join('/'));
   check('P3 城市会话在原版 ka() 内自动开启', p3Boot.cityLoop === true,
     `cityLoop=${p3Boot.cityLoop} cityId=${p3Boot.cityId} phase=${p3Boot.stats.sessions}`);
@@ -440,6 +570,9 @@ try {
   let cityOpened = null;
   let ownPick = null;
   let ownList = [];
+  // 相机在 P2 段被滚轮放大 + 拖动过，这里复位到整图可见（只动视图，不动游戏状态）
+  await evaluate('window.__P2__.worldCamera.reset(window.__P2__.mapScene.camera)');
+  await sleep(250);
   if (opened && p3Boot.cityLoop) {
     ownList = JSON.parse(await evaluate(`JSON.stringify((() => {
       const a = window.__P2__.adapter, vp = ${JSON.stringify(stageRect)};
@@ -454,18 +587,44 @@ try {
       && c.screen.x < stageRect.left + stageRect.width - 120
       && c.screen.y > stageRect.top + 100
       && c.screen.y < stageRect.top + stageRect.height * 0.62);   // 避开底部收起条
-    ownPick = ownClickable[0] || ownList[0] || null;
+    // 逐个用 elementFromPoint 复核：被 HTML 面板挡住的城不算可点
+    const hitProbe = async (c) => evaluate(`(() => {
+      const e = document.elementFromPoint(${c.screen.x}, ${c.screen.y});
+      if (!e) return 'null';
+      const id = e.id ? '#' + e.id : '';
+      const cls = typeof e.className === 'string' && e.className ? '.' + e.className.split(' ')[0] : '';
+      return e.tagName + id + cls;
+    })()`);
+    let hitTag = null;
+    for (const c of [...ownClickable, ...ownList]) {
+      const t = await hitProbe(c);
+      if (!hitTag) hitTag = t;
+      if (String(t).startsWith('CANVAS')) { ownPick = c; hitTag = t; break; }
+    }
     check('找到玩家控制且可点击的城市', !!ownPick,
       ownList.slice(0, 4).map((c) => `#${c.id} ${c.name}`).join(', ') || '无');
 
     if (ownPick) {
-      const hitTag = await evaluate(`(() => {
-        const e = document.elementFromPoint(${ownPick.screen.x}, ${ownPick.screen.y});
-        return e ? e.tagName : null;
-      })()`);
-      check('城市屏幕位置落在 3D 画布上（未被 HTML 遮挡）', hitTag === 'CANVAS', String(hitTag));
+      check('城市屏幕位置落在 3D 画布上（未被 HTML 遮挡）', String(hitTag).startsWith('CANVAS'),
+        `${ownPick.name} -> ${hitTag}`);
+      // P6：与原版 zs() 一致——第一次点击只把光标移到该城，再点同一格才确认进入。
+      // 若光标恰好已在该城（前一段测试移动过），第一次点击就会直接确认，这里两种都接受。
       await clickAt(ownPick.screen.x, ownPick.screen.y);
-      cityOpened = await waitFor(async () => {
+      await sleep(450);
+      const earlyOpen = await waitFor(async () => {
+        const s = await p3Status();
+        return s.open ? s : null;
+      }, 1200, 'P3 城市界面(首击)').catch(() => null);
+      if (earlyOpen) {
+        check('光标已在目标城时首次点击 = 原版确认', true, `城 #${earlyOpen.cityId}`);
+      } else {
+        const cursorAfterFirst = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getCityCursor())'));
+        check('首次点击城市 = 移动原版光标（不是直接确认）',
+          cursorAfterFirst.setx === ownPick.x && cursorAfterFirst.sety === ownPick.y,
+          `光标 (${cursorAfterFirst.setx},${cursorAfterFirst.sety}) / 目标 (${ownPick.x},${ownPick.y})`);
+        await clickAt(ownPick.screen.x, ownPick.screen.y);
+      }
+      cityOpened = earlyOpen || await waitFor(async () => {
         const s = await p3Status();
         return s.open && s.cityId === ownPick.id ? s : null;
       }, 9000, 'P3 城市界面').catch(() => null);
@@ -575,12 +734,20 @@ try {
       }))`));
       for (const c of ownList) {
         if (!hits.find((h) => h[0] === c.id && h[1] === 'CANVAS')) continue;
-        await clickAt(c.screen.x, c.screen.y);
-        const ok = await waitFor(async () => {
+        const waitOpen = (ms, label) => waitFor(async () => {
           const collapsed = await evaluate('document.querySelector(".p3-frame")?.classList.contains("p3-collapsed") ?? true');
           const s = await p3Status();
           return s.open && !collapsed ? s : null;
-        }, 5000, '重新打开城市菜单').catch(() => null);
+        }, ms, label).catch(() => null);
+        // P6：与原版 zs() 一致——点格只移动光标，确认键才进城；
+        // 若光标已在该城，一次点击本身就是"原版确认"。
+        const cur = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getCityCursor())'));
+        await clickAt(c.screen.x, c.screen.y);
+        if (!(cur.setx === c.x && cur.sety === c.y)) {
+          await sleep(350);
+          await evaluate('window.__P2__.adapter.sendInput({ type: 5, param: 39 })');
+        }
+        const ok = await waitOpen(5000, '重新打开城市菜单');
         if (ok) return ok;
       }
       return null;
@@ -598,13 +765,19 @@ try {
 
       // 武将表（面板内的只读视图）——必须在面板展开时检查
       await clickEl('#p3-detail .p3-tab:nth-child(2)');
+      await evaluate('window.__P3__.ui.refresh()');    // 只读重渲染，确保用的是当前 Dn
+      await sleep(220);
       const tabNow = await evaluate('window.__P3__.getStatus().tab');
       const inlineCols = await evaluate('document.querySelectorAll("#p3-detail .p3-officer-table thead th").length');
       const inlineRows = await evaluate('document.querySelectorAll("#p3-detail .p3-officer-table tbody tr").length');
       const liveIds = await evaluate(`window.__P3__.cityUI.officerIds(${ownPick.id}).ids.length`);
+      // 表格行数必须等于同一数据源（getCityOfficers.rows），且用界面当前城市而不是最初点击的城市：
+      // 重新进菜单时可能落在另一座己方城上；ss() 过滤后的可操作武将与城将队列也不是同一口径。
+      const uiCityId = await evaluate('window.__P3__.getStatus().cityId');
+      const expectRows = await evaluate(`window.__P3__.cityUI.getCityOfficers(${uiCityId}).rows.length`);
       check('武将页签可切换', tabNow === 'officers', String(tabNow));
-      check('城市武将表 = 姓名 + 原版 13 列', inlineCols === 14 && inlineRows === liveIds,
-        `${inlineRows} 行 × ${inlineCols} 列（当前 ss() ${liveIds} 人）`);
+      check('城市武将表 = 姓名 + 原版 13 列', inlineCols === 14 && inlineRows === expectRows,
+        `${inlineRows} 行 × ${inlineCols} 列（表格数据源 ${expectRows} 行 / ss() 队列 ${liveIds} 人）`);
       check('执行指令后武将离开城市队列（原版 Zr() 从 PersonQueue 移除）',
         liveIds === officerInfo.length - (farmingDelta > 0 ? 1 : 0),
         `指令前 ${officerInfo.length} 人 -> 现在 ${liveIds} 人（农业 ${farmingDelta}）`);
@@ -801,8 +974,22 @@ try {
       if (p4Enemy) {
         const intent = await evaluate('window.__P2__.interaction.intent');
         check('城市循环内 3D 点击意图 = 原版确认选城', intent === 'select', intent);
+        // P6：与原版 zs() 一致——第一次点击移动光标，再点同一格才确认目标
+        const orderCount = () => evaluate(
+          'window.__SGBY_CORE__.Dn.g_OrderQueue.filter((o) => o.OrderId === 27).length');
         await clickAt(p4Enemy.x, p4Enemy.y);
-        await sleep(1800);
+        await sleep(1000);
+        let ordersNow = await orderCount();
+        if (!ordersNow) {
+          const enemyPos = JSON.parse(await evaluate(`JSON.stringify(window.__P2__.adapter.getCity(${p4Enemy.id}).position)`));
+          const curNow = JSON.parse(await evaluate('JSON.stringify(window.__P2__.adapter.getCityCursor())'));
+          check('出征目标城首次点击 = 移动原版光标',
+            curNow.setx === enemyPos.x && curNow.sety === enemyPos.y,
+            `光标 (${curNow.setx},${curNow.sety}) / 目标 (${enemyPos.x},${enemyPos.y})`);
+          await clickAt(p4Enemy.x, p4Enemy.y);
+          await sleep(1600);
+          ordersNow = await orderCount();
+        }
         await dismissAnyModal();     // 原版 Ms(94)：情报提示
         await sleep(700);
         const queue = JSON.parse(await evaluate(`JSON.stringify({
@@ -838,9 +1025,9 @@ try {
     check('20 个原版部队槽位且可见部队 > 0',
       d.units.built === 20 && d.units.visible > 0,
       `槽位 ${d.units.built} / 可见 ${d.units.visible}`);
-    check('战斗相机固定斜 45° 正交且禁旋转',
-      d.camera.fixed45 === true && d.camera.projection === 'orthographic'
-      && d.camera.rotationAllowed === false,
+    check('战斗相机正面俯视（0°/90°）正交且禁旋转',
+      d.camera.fixedView === true && d.camera.topDown === true
+      && d.camera.projection === 'orthographic' && d.camera.rotationAllowed === false,
       `${d.camera.azimuthDeg}°/${d.camera.elevationDeg}°`);
     check('战斗 HUD 已显示', (await evaluate('document.getElementById("p4-battle-hud")?.hidden')) === false);
 
@@ -892,6 +1079,14 @@ try {
         + ` · geo ${p7BattlePerf.info.geometries} · tex ${p7BattlePerf.info.textures}`);
 
       // ---- 进战斗时相机自动取景：所有在场部队都应落在可视区内
+      const battleViewDiag = await evaluate(`JSON.stringify((() => {
+        const r = document.getElementById('p1-stage').getBoundingClientRect();
+        return { body: document.body.dataset.sangoView,
+          kind: window.__P2__.adapter.getInputPhase().kind,
+          rect: [r.left, r.top, r.width, r.height],
+          p6: window.__P6__ ? window.__P6__.getSnapshot().view : null };
+      })())`);
+      console.log('\n--- 战斗视图诊断 ---\n' + battleViewDiag);
       const inView = JSON.parse(await evaluate(`JSON.stringify((() => {
         const vp = ${JSON.stringify(stageRect)};
         const r = document.getElementById('p1-stage').getBoundingClientRect();

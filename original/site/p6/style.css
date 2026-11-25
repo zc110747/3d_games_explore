@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 /* P6 全局整合层 —— 弹窗 / 提示 / 致命错误 / 存档面板
    沿用 P2~P5 的暗色木质 + 金色描边语汇，不引入新色系。
    两条铁律（P3 踩过）：
@@ -231,3 +232,98 @@
   font-size: 11px;
   pointer-events: none;
 }
+=======
+/* ==========================================================================
+ * P6 3D 主界面 HUD —— 只做「原版操作在 3D 里的等价按键条 + 状态信息」
+ *
+ * 设计原则（对应需求 3「操作逻辑与原版一致」）：
+ *   - 按钮不实现任何规则，只把原版键码（38/51/34/35/36/37/39/40）投递给
+ *     GameAdapter.sendInput()，与原版 zs() 消费的消息完全相同。
+ *   - 不新增游戏状态，所有文字来自 Dn / lib（GameAdapter 只读投影）。
+ * ========================================================================== */
+
+#p6-ops {
+  position: absolute;
+  left: 50%;
+  bottom: 8px;
+  transform: translateX(-50%);
+  z-index: 11;
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 5px 12px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, rgba(28, 23, 16, .84), rgba(12, 10, 7, .9));
+  border: 1px solid rgba(200, 160, 90, .3);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .45), inset 0 1px 0 rgba(255, 226, 168, .07);
+  color: #eadcc0;
+  pointer-events: auto;
+}
+#p6-ops[hidden] { display: none; }
+
+.p6-ops-group { display: flex; gap: 5px; }
+
+.p6-key {
+  min-width: 42px;
+  height: 34px;
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12.5px;
+  color: #eadcc0;
+  background: linear-gradient(180deg, #3a3024, #241c14);
+  border: 1px solid rgba(200, 160, 90, .42);
+  border-radius: 7px;
+  cursor: pointer;
+  touch-action: none;
+}
+.p6-key:hover { background: linear-gradient(180deg, #4a3d2c, #2c2318); }
+.p6-key:active, .p6-key.p6-pressed { background: #5a4a32; }
+.p6-key.p6-primary { color: #fff2cf; border-color: rgba(224, 176, 74, .72); }
+.p6-key.p6-cancel { color: #e6c0b4; border-color: rgba(180, 110, 90, .5); }
+
+.p6-dpad {
+  display: grid;
+  grid-template-columns: repeat(3, 40px);
+  grid-template-rows: repeat(2, 30px);
+  gap: 4px;
+}
+.p6-dpad .p6-key { min-width: 40px; height: 30px; padding: 0; font-size: 13px; }
+.p6-dpad [data-p6-key="34"] { grid-column: 2; grid-row: 1; }
+.p6-dpad [data-p6-key="36"] { grid-column: 1; grid-row: 2; }
+.p6-dpad [data-p6-key="35"] { grid-column: 2; grid-row: 2; }
+.p6-dpad [data-p6-key="37"] { grid-column: 3; grid-row: 2; }
+
+/* 窄屏：按钮缩小，仍保留全部原版按键 */
+@media (max-width: 760px) {
+  #p6-ops { gap: 8px; padding: 6px 8px; }
+  .p6-key { min-width: 38px; height: 34px; font-size: 12px; padding: 0 6px; }
+  .p6-dpad { grid-template-columns: repeat(3, 36px); grid-template-rows: repeat(2, 32px); }
+  .p6-dpad .p6-key { min-width: 36px; height: 32px; }
+}
+
+/* 顶部状态条的字段（复用 p1-chip 外观，只补语义色） */
+#p6-king { color: #f0d79a; }
+#p6-turn { color: #cfd8e3; }
+#p6-cursor { color: #9ad0ff; }
+
+/* 三个阶段的芯片只作为调试信息保留在「运行状态」面板里，顶栏不显示，保持主界面干净 */
+#p3-chip, #p4-chip, #p5-chip { display: none; }
+
+/* 「信息 / 查找」临时回落到原版 2D 画面时的提示条 */
+#p6-peek-hint {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 9;
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(96, 58, 20, .92);
+  border: 1px solid rgba(224, 190, 116, .85);
+  color: #ffe9a8;
+  font-size: 12.5px;
+  letter-spacing: .02em;
+  pointer-events: none;
+}
+#p6-peek-hint[hidden] { display: none; }
+>>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19

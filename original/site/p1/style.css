@@ -1,6 +1,6 @@
 /* ==========================================================================
  * P1 3D 基础架构样式（新增文件；不修改原版 style.css）
- * 深色极简；3D canvas 铺底，HTML UI 浮于其上，原版 2D 画面折叠在右下角。
+ * 两态：menu（原版 2D 主界面整屏） / game（3D + HTML HUD）。
  * ========================================================================== */
 :root {
   --p1-bg: #0c0e11;
@@ -11,6 +11,11 @@
 }
 
 html, body { height: 100%; overflow: hidden; }
+
+/* 视图模式（P6）：menu 只显示原版 2D，game 只显示 3D 与其 HUD */
+body[data-sango-view="menu"] #p1-stage,
+body[data-sango-view="menu"] #p1-ui { display: none; }
+body[data-sango-view="game"] #p1-legacy { display: none; }
 
 #p1-root {
   position: relative;
@@ -106,22 +111,22 @@ html, body { height: 100%; overflow: hidden; }
 .p1-modal { width: min(360px, 90vw); }
 .p1-modal p { line-height: 1.7; color: var(--p1-dim); }
 
-/* ---------- 原版 2D 画面（保留 DOM，缩为对照窗） ---------- */
+/* ---------- 原版 2D 界面（menu 态整屏；DOM/操作与原版 index.html 一致） ---------- */
 #p1-legacy {
-  position: absolute; right: 14px; bottom: 14px; z-index: 6;
-  width: 268px; height: 372px; overflow: hidden;
-  background: #0c0e11; border: 1px solid var(--p1-line);
-  border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  position: absolute; inset: 0; z-index: 6;
+  background: #1a1c20;
+  overflow: hidden;
 }
-#p1-legacy.hidden { display: none; }
 #p1-legacy #app {
-  width: 620px; height: 840px; transform: scale(.43); transform-origin: top left;
-  padding: 4px; gap: 4px;
+  width: 100%; height: 100%;
+  padding: 8px; gap: 8px;
 }
-#p1-legacy #screen { width: 240px !important; height: 320px !important; }
-#p1-legacy #status-bar,
-#p1-legacy #help-note { font-size: 14px; }
-#p1-legacy #touch-controls { transform: scale(.85); transform-origin: top center; }
+#p6-menu-hint {
+  position: absolute; right: 14px; bottom: 10px; z-index: 7;
+  padding: 4px 10px; border-radius: 999px;
+  background: rgba(12, 14, 17, .72); color: #8b939f;
+  font-size: 11.5px; letter-spacing: .02em; pointer-events: none;
+}
 
 /* ---------- WebGL 失败提示 ---------- */
 #p1-fatal {
@@ -133,6 +138,5 @@ html, body { height: 100%; overflow: hidden; }
 
 @media (max-width: 720px) {
   #p1-panel { width: calc(100vw - 28px); }
-  #p1-legacy { width: 200px; height: 280px; }
-  #p1-legacy #app { transform: scale(.31); }
+  #p6-menu-hint { display: none; }
 }

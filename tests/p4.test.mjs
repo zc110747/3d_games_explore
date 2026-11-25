@@ -105,9 +105,9 @@ test('兵种颜色表覆盖原版 6 个兵种（界面字符串 [12]）', () => 
   assert.ok(UNIT_STYLE.armsColors.length >= arms.length, '兵种颜色不足');
 });
 
-test('战斗相机固定斜 45° 且不允许旋转', () => {
-  assert.equal(BATTLE_CAMERA_CONFIG.azimuthDeg, 45);
-  assert.equal(BATTLE_CAMERA_CONFIG.elevationDeg, 45);
+test('战斗相机为正面俯视（0°/90°）且不允许旋转', () => {
+  assert.equal(BATTLE_CAMERA_CONFIG.azimuthDeg, 0);
+  assert.equal(BATTLE_CAMERA_CONFIG.elevationDeg, 90);
   assert.equal(BATTLE_CAMERA_CONFIG.projection, 'orthographic');
   assert.ok(BATTLE_CAMERA_CONFIG.maxZoom > BATTLE_CAMERA_CONFIG.minZoom);
   assert.ok(BATTLE_CAMERA_CONFIG.panLimit >= 16, '32x32 地图半幅 16，panLimit 需覆盖');

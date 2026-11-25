@@ -33,12 +33,21 @@ export const BATTLE_GRID_CONFIG = Object.freeze({
   groundY: 0,
 });
 
-/** 固定斜 45° 正交相机：俯角 45°、方位角 45°，不允许自由旋转。 */
+/** 正交相机：固定视角、不允许自由旋转（P6 起为正面俯视 0°/90°）。 */
+/*
+ * P6：视角改为「正面俯视」——方位角 0°、俯角 90°（相机正上方垂直向下）。
+ * 世界 X → 屏幕右，世界 +Z → 屏幕下，与原版 12x9 地图的行列方向完全一致，
+ * 不再有斜视角的透视缩短，也不会把拖动方向折算到斜向基向量。
+ * elevationDeg >= TOP_DOWN_ELEVATION 时 CameraManager 会把相机 up 换成 (0,0,-1)，
+ * 否则 up=(0,1,0) 与视线平行会让 lookAt 退化。
+ */
+export const TOP_DOWN_ELEVATION = 89.5;
+
 export const CAMERA_CONFIG = Object.freeze({
   world: Object.freeze({
     projection: 'orthographic',
-    azimuthDeg: 45,
-    elevationDeg: 45,
+    azimuthDeg: 0,
+    elevationDeg: 90,
     distance: 24,
     frustumHeight: 13,
     zoom: 1,
@@ -51,8 +60,8 @@ export const CAMERA_CONFIG = Object.freeze({
   }),
   battle: Object.freeze({
     projection: 'orthographic',
-    azimuthDeg: 45,
-    elevationDeg: 45,
+    azimuthDeg: 0,
+    elevationDeg: 90,
     distance: 46,
     frustumHeight: 34,
     zoom: 1,
@@ -100,7 +109,7 @@ export const CORE_CONFIG = Object.freeze({
 /**
  * P2 追加：原版输入协议常量（唯一权威数值来源）。
  * 依据还原副本 sgby.pretty.js：
- *   L332   key codes 上34/下35/左36/右37/确认39/返回40
+ *   L332   key codes 上34/下35/左36/右37/确认39/返回40；Tab/h=38（帮助）m/M=51（形势图）
  *   L298-312 pointer param 1按下/2抬起/3移动/4取消，u()/f() 判定
  *   L467-468 class A.pushMsg/waitMsg；P0 §6.4 消息格式 {type:5|16,param,x,y}
  *   L4290-4305 zs() 消费方向键移动光标、确认键返回当前城市
@@ -108,7 +117,7 @@ export const CORE_CONFIG = Object.freeze({
 export const ORIGINAL_INPUT = Object.freeze({
   keyType: 5,
   pointerType: 16,
-  keys: Object.freeze({ up: 34, down: 35, left: 36, right: 37, confirm: 39, cancel: 40 }),
+  keys: Object.freeze({ up: 34, down: 35, left: 36, right: 37, confirm: 39, cancel: 40, help: 38, chart: 51 }),
   pointer: Object.freeze({ down: 1, up: 2, move: 3, cancel: 4 }),
-  source: 'sgby.pretty.js L332 / L298-312 / L467-468 / L4290-4305',
+  source: 'sgby.pretty.js L332（含 38/51）/ L298-312 / L467-468 / L4290-4305',
 });

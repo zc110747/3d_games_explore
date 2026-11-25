@@ -88,6 +88,18 @@ export class BattleMapScene extends BattleScene {
     return 720;
   }
 
+  getViewportWidth() {
+    const info = this.renderManager && this.renderManager.getInfo ? this.renderManager.getInfo() : null;
+    if (info && Array.isArray(info.size) && info.size[0] > 0) return info.size[0];
+    return 1100;
+  }
+
+  /** 战斗 HUD 固定占左侧：投影窗口右移半个面板宽，避免地图被面板压住。 */
+  _hudOffsetPx() {
+    const w = this.hud && this.hud.dom ? this.hud.dom.root.getBoundingClientRect().width : 0;
+    return w > 0 ? Math.round(w / 2) + 8 : 0;
+  }
+
   /** 原版 yo() 完成后调用：按真实战况重建地图/部队/范围。 */
   loadBattle() {
     const THREE = this.THREE;
@@ -148,10 +160,10 @@ export class BattleMapScene extends BattleScene {
     // 相机按真实地图尺寸取景（32x32 整图可见），并把注视点归零
     this.battleCamera.setViewportHeight(this.getViewportHeight());
     this.battleCamera.reset(this.camera);
-    this.battleCamera.fit(this.camera, this.getAspect(), { cols: map.width, rows: map.height });
-    // 战斗 HUD 固定占左侧：把地图整体向右让出半个面板宽度，避免部队被压住
-    const hudWidth = this.hud && this.hud.dom ? this.hud.dom.root.getBoundingClientRect().width : 0;
-    if (hudWidth > 0) this.battleCamera.panByPixels(this.camera, Math.round(hudWidth / 2) + 8, 0);
+    this.battleCamera.fit(this.camera, this.getAspect(), {
+      cols: map.width, rows: map.height,
+      offsetPx: this._hudOffsetPx(), viewportWidth: this.getViewportWidth(),
+    });
 
     this.selection = null;
     this._hoverPathShown = false;
@@ -419,6 +431,7 @@ export class BattleMapScene extends BattleScene {
       this.battleCamera.setViewportHeight(this.getViewportHeight());
       this.battleCamera.fit(this.camera, aspect, {
         cols: this.lastLoad.width, rows: this.lastLoad.height,
+        offsetPx: this._hudOffsetPx(), viewportWidth: this.getViewportWidth(),
       });
     }
   }
