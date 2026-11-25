@@ -52,7 +52,7 @@ export class WorldOps {
     this.active = false;
     this.cursor = null;          // 最近一次观测到的原版光标
     this.lastClick = null;
-    this.stats = { clicks: 0, moved: 0, confirms: 0, keys: 0, rejected: 0, peeks: 0, lastReason: null };
+    this.stats = { clicks: 0, moved: 0, confirms: 0, keys: 0, actions: 0, rejected: 0, peeks: 0, lastReason: null };
     this._timer = null;
     this._marker = null;
     this._buttons = new Map();
@@ -135,15 +135,59 @@ export class WorldOps {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'p6-key' + (btn.variant ? ` p6-${btn.variant}` : '');
-        b.dataset.p6Key = String(btn.key);
+        // 有键码的走原版协议；没键码的（菜单/缩放）走 action，两者都不自己实现规则
+        if (btn.key !== undefined) b.dataset.p6Key = String(btn.key);
+        else b.dataset.p6Action = btn.action;
         b.textContent = btn.label;
         if (btn.hint) b.title = btn.hint;
-        b.addEventListener('click', () => this.sendKey(btn.key));
+        b.addEventListener('click', () => {
+          if (btn.key !== undefined) return this.sendKey(btn.key);
+          return this.runAction(btn.action);
+        });
         wrap.append(b);
-        this._buttons.set(btn.key, b);
+        this._buttons.set(btn.key !== undefined ? String(btn.key) : btn.action, b);
       }
       host.append(wrap);
     }
+  }
+
+  /**
+   * 无键码动作：原版把「菜单」和画面缩放做成了 DOM 控件，语义等价映射即可。
+   *   menu     -> 点击原版 #menu-btn（面板本身是 HTML，3D 视图下可直接显示）
+   *   zoomIn/Out -> 相机缩放（原版缩放改的是 2D 整数倍，3D 里语义等价，不改任何游戏状态）
+   */
+  runAction(action) {
+    if (action === 'menu') {
+      const btn = typeof document !== 'undefined' ? document.getElementById('menu-btn') : null;
+      if (!btn) {
+        this.stats.rejected++;
+        this.stats.lastReason = '原版菜单按钮不存在';
+        return { ok: false, reason: this.stats.lastReason };
+      }
+      btn.click();
+      this.stats.actions++;
+      // 实测（无头 Edge，game 视图）：原版菜单面板是 body 上的 .wm-overlay，直接开在 3D 之上，
+      // getInputPhase().kind 仍是 zs、视图不跳。所以这里**不要**切回 2D —— 只在面板打开
+      // 期间让原版自己暂停输入即可（原版 ir 标志），关掉就恢复。
+      this.log('原版「菜单」面板已打开（云存档 / MOD / 关于）');
+      return { ok: true, action };
+    }
+    if (action === 'zoomIn' || action === 'zoomOut') {
+      const cam = this.scene && this.scene.camera;
+      if (!this.worldCamera || !cam) {
+        this.stats.rejected++;
+        this.stats.lastReason = '相机不可用';
+        return { ok: false, reason: this.stats.lastReason };
+      }
+      const factor = action === 'zoomIn' ? 1.15 : 1 / 1.15;
+      const ok = safe(() => this.worldCamera.zoomBy(cam, factor), false);
+      if (ok) { this.stats.actions++; this.log(`视野缩放 ${action}（只改相机，不改游戏状态）`); }
+      else { this.stats.rejected++; this.stats.lastReason = '缩放被拒绝（已达边界）'; }
+      return { ok: !!ok, action };
+    }
+    this.stats.rejected++;
+    this.stats.lastReason = `未知动作 ${action}`;
+    return { ok: false, reason: this.stats.lastReason };
   }
 
   // ------------------------------------------------------------ 操作
@@ -177,10 +221,15 @@ export class WorldOps {
       return r;
     }
     this.stats.keys++;
+    this._enterPeek('page');
+    return r;
+  }
+
+  /** 进入"临时显示原版画面"：钉住视图并挂上返回监听（帮助/形势图/菜单共用）。 */
+  _enterPeek() {
     this.stats.peeks++;
     if (this.onPeek) { try { this.onPeek(true); } catch (_) { /* 忽略 */ } }
     this._bindPeekExit();
-    return r;
   }
 
   _bindPeekExit() {
@@ -296,6 +345,7 @@ export class WorldOps {
       cursor: this.cursor,
       stats: { ...this.stats },
       buttons: [...this._buttons.keys()],
+      actions: this.stats.actions,
       markerVisible: !!(this._marker && this._marker.visible),
       peeking: !!this._peekCleanup,
     };

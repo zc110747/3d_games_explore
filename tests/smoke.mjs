@@ -280,16 +280,81 @@ try {
   check('进入剧本后自动切换 3D 战略地图', switched === 'game', `body=${bodyView}`);
   const gameView = JSON.parse(await evaluate(`JSON.stringify((() => {
     const vis = (id) => { const el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none'; };
+    const btns = [...document.querySelectorAll('#p6-ops .p6-key')];
     return {
       legacy: vis('p1-legacy'), stage: vis('p1-stage'), ui: vis('p1-ui'),
-      opsButtons: document.querySelectorAll('#p6-ops .p6-key').length,
+      opsButtons: btns.length,
+      opsKeys: btns.filter((b) => b.dataset.p6Key).map((b) => b.dataset.p6Key).sort(),
+      opsActions: btns.filter((b) => b.dataset.p6Action).map((b) => b.dataset.p6Action).sort(),
       opsHidden: document.getElementById('p6-ops')?.hidden,
     };
   })())`));
   check('3D 视图下原版 2D 层隐藏、原版操作条就绪',
     gameView.legacy === false && gameView.stage === true && gameView.ui === true
-    && gameView.opsButtons >= 8 && gameView.opsHidden === false,
+    && gameView.opsButtons === 11 && gameView.opsHidden === false,
     `legacy=${gameView.legacy} stage=${gameView.stage} 按键=${gameView.opsButtons} hidden=${gameView.opsHidden}`);
+  // P6 §8.2：原版全部按键（8 个键码 + 菜单/缩放三个动作）都在，一个都不少
+  const expectKeys = ['34', '35', '36', '37', '38', '39', '40', '51'];
+  const expectActions = ['menu', 'zoomIn', 'zoomOut'];
+  check('操作条保留原版全部按键（8 个键码 + 菜单/缩放）',
+    JSON.stringify(gameView.opsKeys) === JSON.stringify(expectKeys)
+    && JSON.stringify(gameView.opsActions) === JSON.stringify(expectActions),
+    `keys=${gameView.opsKeys.join(',')} actions=${gameView.opsActions.join(',')}`);
+
+  // 「菜单」= 原版右上角菜单（云存档 / MOD / 关于）：面板是 body 上的 .wm-overlay，
+  // 直接开在 3D 之上（实测 kind 仍为 zs、视图不跳）。注意页面里还有一个「云存档同步」同 class
+  // 的隐藏面板，选择器必须挑"当前打开的那个"，否则会点到别人的关闭按钮（踩过）。
+  const menuClicked = await evaluate(`((() => {
+    const b = document.querySelector('#p6-ops [data-p6-action="menu"]');
+    if (!b) return false;
+    b.click();
+    return true;
+  })())`);
+  await sleep(400);
+  const menuState = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const ov = [...document.querySelectorAll('.wm-overlay')].find((o) => o.classList.contains('open'));
+    if (!ov) return { open: false, total: document.querySelectorAll('.wm-overlay').length };
+    const r = ov.querySelector('.wm-close');
+    const rect = r ? r.getBoundingClientRect() : null;
+    return { open: true, inBody: ov.parentElement === document.body,
+      title: ov.querySelector('.wm-title')?.textContent || '',
+      view: document.body.dataset.sangoView,
+      close: rect ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null };
+  })())`));
+  let menuClosed = false;
+  if (menuState.close) {
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: menuState.close.x, y: menuState.close.y, button: 'left', clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: menuState.close.x, y: menuState.close.y, button: 'left', clickCount: 1 });
+    await sleep(400);
+    menuClosed = await evaluate(`![...document.querySelectorAll('.wm-overlay')].some((o) => o.classList.contains('open'))`);
+  }
+  check('「菜单」按钮打开原版菜单面板（3D 下直接可读，视图不跳），可正常关闭',
+    menuClicked === true && menuState.open === true && menuState.inBody === true
+    && menuState.title === '菜单' && menuState.view === 'game' && menuClosed === true,
+    `open=${menuState.open} title=${menuState.title} inBody=${menuState.inBody}`
+    + ` 视图=${menuState.view} 关闭=${menuClosed}`);
+  // 面板关掉后必须还能操作地图（不能留下吃点击的隐形遮罩）
+  await sleep(300);
+  const menuAfterView = await evaluate('document.body.dataset.sangoView');
+
+  // 缩放 −/+：只改相机，不改任何游戏状态
+  const camZoom = async () => JSON.parse(await evaluate(
+    'JSON.stringify({ z: window.__P2__.worldCamera.getState(window.__P2__.mapScene.camera).zoom,'
+    + ' turn: (() => { const g = window.__P2__.adapter.getGameState(); return `${g.year}-${g.month}`; })() })'));
+  const clickAction = async (a) => evaluate(`document.querySelector('#p6-ops [data-p6-action="${a}"]').click()`);
+  const zoomBefore = await camZoom();
+  await clickAction('zoomIn');
+  await sleep(220);
+  const zoomAfterIn = await camZoom();
+  await clickAction('zoomOut');
+  await sleep(220);
+  const zoomAfterOut = await camZoom();
+  check('缩放 −/+ 只改相机（放大后 zoom 变大，缩小回原值；回合未变）',
+    zoomAfterIn.z > zoomBefore.z && Math.abs(zoomAfterOut.z - zoomBefore.z) < 1e-6
+    && zoomBefore.turn === zoomAfterOut.turn,
+    `zoom ${zoomBefore.z.toFixed(3)} -> ${zoomAfterIn.z.toFixed(3)} -> ${zoomAfterOut.z.toFixed(3)}`
+    + ` / 回合 ${zoomBefore.turn} -> ${zoomAfterOut.turn}`);
+  await evaluate('window.__P2__.worldCamera.reset(window.__P2__.mapScene.camera)');
   await sleep(600);   // 等 resize/fit 完成后再取画布矩形
 
   // ==================================================================
@@ -355,6 +420,11 @@ try {
     selDiag.selected === target.id && selDiag.roads.highlighted > 0
     && selDiag.roads.highlighted <= 8,
     `选中 #${selDiag.selected} 高亮 ${selDiag.roads.highlighted} 条`);
+  // 逻辑边数 > 0 只证明"算出了要亮哪几条"，不证明"真画出来了"：
+  // highlightNeighbors 曾在这里 ReferenceError 却不影响上面的断言（静默失败）。
+  check('高亮路径真的生成了 Mesh（不只是算出了边数）',
+    selDiag.roads.highlightMesh === true && selDiag.roads.highlightVertices > 0,
+    `mesh=${selDiag.roads.highlightMesh} 顶点=${selDiag.roads.highlightVertices}`);
 
   const selBeforeDrag = await evaluate('window.__P2__.interaction.selectedCityId');
   await dragAt(target.x, target.y, target.x + 70, target.y + 40);
@@ -421,6 +491,29 @@ try {
     ownerTest.changed && ownerTest.restored,
     `材质切换=${ownerTest.changed} 分类=${ownerTest.kind} 已恢复=${ownerTest.restored}`);
 
+
+  // P6 §8.1：阵营三态配色 —— 俯视整图下必须能一眼分出我方/敌方/空城
+  const factionColors = JSON.parse(await evaluate(`JSON.stringify((() => {
+    const p = window.__P2__, f = p.mapScene.flagRenderer;
+    const player = p.adapter.getGameState().playerKing + 1;
+    const other = player === 1 ? 2 : 1;
+    const style = (id) => { const s = f.getFactionStyle(id); return { id, kind: s.kind, color: s.color }; };
+    const mine = style(player), foe = style(other), empty = style(0);
+    const c = p.mapScene.cityRenderer;
+    const ring = c._factionRing ? { count: c._factionRing.count, diag: c.getDiagnostics().factions } : null;
+    return { player, other, mine, foe, empty, ring };
+  })())`));
+  const fc = factionColors;
+  check('阵营三态配色：我方蓝 / 敌方红 / 空城灰，且地面环按阵营着色',
+    fc.mine.kind === 'player' && fc.foe.kind === 'other' && fc.empty.kind === 'empty'
+    && new Set([fc.mine.color, fc.foe.color, fc.empty.color]).size === 3
+    && fc.mine.color === 0x2f6fd0 && fc.foe.color === 0xc0392b
+    && !!fc.ring && fc.ring.count === 38
+    && fc.ring.diag.player + fc.ring.diag.enemy + fc.ring.diag.empty === 38,
+    `我方 #${fc.mine.id}=0x${fc.mine.color.toString(16)} / 敌方 #${fc.foe.id}=0x${fc.foe.color.toString(16)}`
+    + ` / 空城=0x${fc.empty.color.toString(16)}`
+    + ` / 环 ${fc.ring ? fc.ring.count : 0} 个（我 ${fc.ring ? fc.ring.diag.player : 0}`
+    + ` 敌 ${fc.ring ? fc.ring.diag.enemy : 0} 空 ${fc.ring ? fc.ring.diag.empty : 0}）`);
   const visualDiag = await evaluate(`JSON.stringify((() => {
     const c = window.__P2__.mapScene.cityRenderer;
     const item = c._labels.get(0), s = item && item.sprite;
@@ -1098,13 +1191,14 @@ try {
           const inside = !!s && s.x > r.left && s.x < r.right && s.y > r.top && s.y < r.bottom;
           const el = inside ? document.elementFromPoint(s.x, s.y) : null;
           out.push({ index: u.index, x: Math.round(s ? s.x : -1), y: Math.round(s ? s.y : -1),
-            inside, tag: el ? el.tagName : null });
+            inside, tag: el ? el.tagName : null,
+            elId: el ? (el.id || String(el.className || '').slice(0, 24)) : null });
         }
         return out;
       })())`));
       check('战斗相机自动取景：在场部队全部落在可视区且未被 HUD 遮挡',
         inView.length > 0 && inView.every((u) => u.inside && u.tag === 'CANVAS'),
-        inView.map((u) => `#${u.index}(${u.x},${u.y})${u.inside ? '' : '×'}${u.tag === 'CANVAS' ? '' : '/' + u.tag}`).join(' '));
+        inView.map((u) => `#${u.index}(${u.x},${u.y})${u.inside ? '' : '×'}${u.tag === 'CANVAS' ? '' : '/' + u.tag + ':' + u.elId}`).join(' '));
 
       await send('Page.enable');
       const battleShot = await send('Page.captureScreenshot', { format: 'png' });
@@ -2057,6 +2151,9 @@ try {
     frames: window.__P1__.renderManager.stats.frames,
     heap: window.__P7__.perfReport().memory.available ? window.__P7__.perfReport().memory.usedMB : null,
   })`));
+  // 长跑前的基准帧率：本机是 SwiftShader 软件光栅化，绝对帧率随机器负载漂移，
+  // 所以判据用「相对衰减」而不是写死 40fps（绝对门槛另设一个很低的兜底，防彻底崩）。
+  const p7SoakFps0 = JSON.parse(await evaluate('JSON.stringify(window.__P7__.frameStats())')).fps;
   const p7SoakLog = [];
   for (let i = 0; i < 9; i++) {
     await sleep(5000);
@@ -2090,9 +2187,44 @@ try {
     p7Soak0.heap == null ? '该环境不提供 performance.memory（如实跳过）'
       : `堆 ${p7HeapMin.toFixed(1)}~${p7HeapMax.toFixed(1)}MB（波动 ${(p7HeapMax - p7HeapMin).toFixed(1)}MB）`);
   const p7SoakFinal = JSON.parse(await evaluate('JSON.stringify(window.__P7__.perfReport())'));
-  check('P7 长跑后帧率仍达标（同环境下 >= 40fps）',
-    p7SoakFinal.frame.fps >= 40,
-    `${p7SoakFinal.frame.fps}fps · p95 ${p7SoakFinal.frame.p95Ms}ms · 掉帧 ${p7SoakFinal.frame.dropped}`);
+  const p7SoakInfo = JSON.parse(await evaluate(`JSON.stringify({
+    scene: window.__P1__.getStatus().scenes.current,
+    view: document.body.dataset.sangoView,
+    canvas: window.__P1__.renderManager.getInfo().size,
+    dpr: window.__P1__.renderManager.getInfo().pixelRatio,
+    cap: window.__P1__.renderManager.getInfo().pixelRatioCap,
+    draws: window.__P1__.renderManager.getInfo().drawCalls,
+    tris: window.__P1__.renderManager.getInfo().triangles,
+    adaptive: window.__P7__.adaptiveStatus(),
+    busy: window.__P7__.frameStats().busyMeanMs,
+    busyP95: window.__P7__.frameStats().busyP95Ms,
+    legacy: (() => { const el = document.getElementById('p1-legacy');
+      return el ? getComputedStyle(el).display : 'none'; })(),
+    layers: [...document.querySelectorAll('body *')].filter((el) => {
+      const st = getComputedStyle(el);
+      if (st.display === 'none' || st.visibility === 'hidden') return false;
+      if (st.position !== 'fixed' && st.position !== 'absolute') return false;
+      const r = el.getBoundingClientRect();
+      return r.width >= window.innerWidth * 0.85 && r.height >= window.innerHeight * 0.85;
+    }).map((el) => el.id || String(el.className).slice(0, 18)),
+  })`));
+  check('P7 长跑后帧率未衰减（相对长跑前 >= 80%，绝对 >= 12fps 兜底）',
+    p7SoakFinal.frame.fps >= p7SoakFps0 * 0.8 && p7SoakFinal.frame.fps >= 12,
+    `${p7SoakFps0.toFixed(1)} -> ${p7SoakFinal.frame.fps}fps（长跑前 -> 后）`
+    + ` · p95 ${p7SoakFinal.frame.p95Ms}ms · 掉帧 ${p7SoakFinal.frame.dropped}`
+    + ` · 场景 ${p7SoakInfo.scene}/${p7SoakInfo.view} · 画布 ${p7SoakInfo.canvas.join('x')}`
+    + ` · dpr ${p7SoakInfo.dpr}/${p7SoakInfo.cap} · draws ${p7SoakInfo.draws} tris ${p7SoakInfo.tris}`
+    + ` · 自适应 ${p7SoakInfo.adaptive.lastReason} 降${p7SoakInfo.adaptive.downshifts}`
+    + ` · 45s 实测 ${((p7SoakEnd.frames - p7Soak0.frames) / 45).toFixed(1)}fps`
+    + ` · CPU ${p7SoakInfo.busy}/${p7SoakInfo.busyP95}ms · legacy=${p7SoakInfo.legacy}`
+    + ` · 全屏层 ${p7SoakInfo.layers.join(',') || '无'}`);
+
+  // 启动时查过一次异常（exceptions.length===0），但那是"还没开打"的时候。
+  // 交互过程中的异常过去只在末尾打印、不参与判定 —— RoadRenderer 的
+  // ReferenceError 就这样混过了全绿。全程跑完必须再查一次。
+  check('全程无页面 JS 异常（不只在启动时查）',
+    exceptions.length === 0,
+    `exceptions=${exceptions.length}${exceptions.length ? ' · 首条：' + exceptions[0] : ''}`);
 
   const diag = await evaluate(`JSON.stringify({
     statusText: document.getElementById('status-text')?.textContent || '',

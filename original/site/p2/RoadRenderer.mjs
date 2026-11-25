@@ -86,6 +86,7 @@ export class RoadRenderer {
 
   /** 只高亮原版允许显示的相邻路径；未连接城市不会被高亮。 */
   highlightNeighbors(cityId) {
+    const THREE = this.THREE;
     this._selectedCity = cityId;
     if (this._highlight) {
       this.group.remove(this._highlight);
@@ -124,6 +125,10 @@ export class RoadRenderer {
       connectedCities: endpoints.size,
       highlighted: this._selectedCity === null ? 0
         : this.links.filter((e) => e.from === this._selectedCity || e.to === this._selectedCity).length,
+      // 逻辑边数不等于"画出来了"：高亮 Mesh 是否真的存在也要能被断言到，
+      // 否则 highlightNeighbors 抛异常时 highlighted 照样 > 0（静默失败）。
+      highlightMesh: !!this._highlight,
+      highlightVertices: this._highlight ? this._highlight.geometry.attributes.position.count : 0,
       source: 'getItem(59,1) / getCityLinks()',
     };
   }

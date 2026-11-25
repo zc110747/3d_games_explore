@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 /* P6 全局整合层 —— 弹窗 / 提示 / 致命错误 / 存档面板
    沿用 P2~P5 的暗色木质 + 金色描边语汇，不引入新色系。
    两条铁律（P3 踩过）：
@@ -232,7 +231,6 @@
   font-size: 11px;
   pointer-events: none;
 }
-=======
 /* ==========================================================================
  * P6 3D 主界面 HUD —— 只做「原版操作在 3D 里的等价按键条 + 状态信息」
  *
@@ -249,6 +247,8 @@
   transform: translateX(-50%);
   z-index: 11;
   display: flex;
+  flex-wrap: wrap;              /* 11 个键（含菜单/缩放）在窄屏允许换行，不挤出屏幕 */
+  justify-content: center;
   align-items: flex-end;
   gap: 14px;
   padding: 5px 12px;
@@ -326,4 +326,9 @@
   pointer-events: none;
 }
 #p6-peek-hint[hidden] { display: none; }
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
+
+/* 合并布局（P6 操作条 + P2 提示条）：P2 的兜底提示原本贴底居中，
+   会和 11 键操作条叠在一起；这里把它抬到操作条上方，两者都完整可读。 */
+body[data-sango-view="game"] #p2-hint {
+  bottom: 62px;
+}

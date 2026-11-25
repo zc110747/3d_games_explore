@@ -13,7 +13,7 @@
  *   - 选中高亮用 instanceColor，不重建对象、不改势力归属颜色；
  *   - 名称牌用 Sprite + CanvasTexture，文字来自原版城市名。
  */
-import { CITY_MODEL_CONFIG as C, LABEL_CONFIG } from './config.mjs';
+import { CITY_MODEL_CONFIG as C, LABEL_CONFIG, factionRingColor } from './config.mjs';
 import { createCityLabelTexture } from './TextureFactory.mjs';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
@@ -41,6 +41,7 @@ export class CityRenderer {
     this._selected = null;
     this._hover = null;          // P7：悬停城市（纯表现，不参与任何判断）
     this._flagRenderer = null;
+    this._factionRing = null;    // P6 §8.1：阵营地面环（38 城 1 draw call）
     this._elapsed = 0;
     this._avoidAccum = 0;
     this._avoidDirty = true;
@@ -49,6 +50,11 @@ export class CityRenderer {
   }
 
   setFlagRenderer(flags) { this._flagRenderer = flags; }
+
+  /** 我方势力 ownerId = 原版 g_PlayerKing + 1（与原版 Belong 同一口径）。 */
+  _playerOwnerId() {
+    try { return this.adapter.getGameState().playerKing + 1; } catch (_) { return null; }
+  }
 
   /** 合并出一份可复用的城廓几何体（所有城市共享）。 */
   _buildBodyGeometry() {
@@ -139,6 +145,24 @@ export class CityRenderer {
     this._ring.name = 'p2-city-selection-ring';
     this._ring.visible = false;
 
+    // P6 §8.1：阵营地面环 —— 一个 InstancedMesh 承载 38 城，只加 1 个 draw call。
+    // 颜色走 instanceColor（阵营三态：我方蓝 / 敌方红 / 空城灰），与城市本体颜色
+    // 完全分开：本体 instanceColor 会乘上城廓 vertexColors，直接乘阵营色会发暗。
+    const factionGeo = this.assets.geometry('p2:city-faction-ring', (T) => {
+      const g = new T.RingGeometry(C.factionRingInner, C.factionRingOuter, 28);
+      g.rotateX(-Math.PI / 2);
+      g.translate(0, C.factionRingY, 0);   // 平躺在地面层，不参与拾取
+      return g;
+    });
+    const factionMat = this.assets.material('p2:city-faction-ring-mat', (T) => new T.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: C.factionRingOpacity,
+      side: T.DoubleSide, depthWrite: false,
+    }));
+    this._factionRing = new THREE.InstancedMesh(factionGeo, factionMat, n);
+    this._factionRing.name = 'p2-city-faction-rings';
+    this._factionRing.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    this._factionRing.renderOrder = 1;
+
     const dummy = new THREE.Object3D();
     for (let i = 0; i < n; i++) {
       const city = this.cities[i];
@@ -149,6 +173,7 @@ export class CityRenderer {
       dummy.updateMatrix();
       this._body.setMatrixAt(i, dummy.matrix);
       this._pick.setMatrixAt(i, dummy.matrix);
+      this._factionRing.setMatrixAt(i, dummy.matrix);
 
       const label = this._makeLabel(city, false);
       label.position.set(p.x, LABEL_CONFIG.yOffset, p.z);
@@ -161,10 +186,23 @@ export class CityRenderer {
     }
     this._body.instanceMatrix.needsUpdate = true;
     this._pick.instanceMatrix.needsUpdate = true;
-    this.group.add(this._body, this._pick, this._ring);
-    for (const city of this.cities) this._applyBodyColor(city.id);
+    this._factionRing.instanceMatrix.needsUpdate = true;
+    this.group.add(this._body, this._pick, this._factionRing, this._ring);
+    for (const city of this.cities) {
+      this._applyBodyColor(city.id);
+      this._applyFactionColor(city.id);
+    }
     this._built = true;
     return this.group;
+  }
+
+  /** 阵营地面环颜色（只读 ownerId，不改任何游戏数据）。 */
+  _applyFactionColor(cityId) {
+    const rec = this._byId.get(cityId);
+    if (!rec || !this._factionRing) return;
+    const color = factionRingColor(rec.ownerId, this._playerOwnerId());
+    this._factionRing.setColorAt(rec.index, new this.THREE.Color(color));
+    if (this._factionRing.instanceColor) this._factionRing.instanceColor.needsUpdate = true;
   }
 
   _makeLabel(city, selected) {
@@ -216,6 +254,7 @@ export class CityRenderer {
     rec.ownerId = city.ownerId;
     rec.state = city.state;
     this._applyBodyColor(cityId);
+    this._applyFactionColor(cityId);
     const labelState = this._labels.get(cityId);
     if (city.name !== rec.text || (cityId === this._selected) !== labelState?.selected) {
       const old = labelState;
@@ -343,6 +382,14 @@ export class CityRenderer {
   }
 
   getDiagnostics() {
+    const player = this._playerOwnerId();
+    const factions = { player: 0, enemy: 0, empty: 0 };
+    // 用 _byId（refreshCity 会就地更新 ownerId），不要用 build() 时的 cities 快照
+    for (const rec of this._byId.values()) {
+      if (!rec.ownerId) factions.empty++;
+      else if (rec.ownerId === player) factions.player++;
+      else factions.enemy++;
+    }
     return {
       cityCount: this.cities.length,
       uniqueIds: new Set(this.cities.map((c) => c.id)).size,
@@ -351,6 +398,9 @@ export class CityRenderer {
       pickables: this.getPickables().length,
       selected: this._selected,
       hover: this._hover,
+      /** P6 §8.1：阵营三态计数 + 地面环是否已建（1 个 InstancedMesh / 1 draw call）。 */
+      factions,
+      factionRing: this._factionRing ? this._factionRing.count : 0,
       stateHistogram: this.cities.reduce((m, c) => {
         m[c.state] = (m[c.state] || 0) + 1; return m;
       }, {}),

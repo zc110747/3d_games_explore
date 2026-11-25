@@ -64,6 +64,14 @@ export const CITY_MODEL_CONFIG = Object.freeze({
   selectedRingColor: 0xffd76a,
   hoverColor: 0xfff4d2,       // P7：悬停时城廓提亮（只改 instanceColor，不改逻辑）
   normalColor: 0xb9a98b,
+  /**
+   * P6 §8.1：阵营地面环（InstancedMesh + RingGeometry，38 城 1 draw call）。
+   * 内径比基座略大（0.29*1.18≈0.34），外径小于选中环 0.47，选中时两者不打架。
+   */
+  factionRingInner: 0.345,
+  factionRingOuter: 0.44,
+  factionRingY: 0.012,        // 与选中环同一水平层（底板之上、城墙之下），不参与拾取
+  factionRingOpacity: 0.62,   // 半透明：远看是"阵营色地面"，不挡地形与道路
   source: '统一模型；原版无城市等级/规模字段，故不做差异化（P2 §6.3）',
 });
 
@@ -100,7 +108,17 @@ export const FLAG_CONFIG = Object.freeze({
   waveAmplitude: 0.018,
   waveSpeed: 2.1,
   emptyFlagColor: 0x6b7280,
-  playerColor: 0xe8b54a,
+  /**
+   * 阵营三态配色（P6 §8.1，用户 2026-11-25 追加）：
+   *   我方 = 蓝，敌方 = 红，空城 = 灰。
+   * 早先按势力给 19 种色（palette），实际玩起来"每条路都是一个颜色"，
+   * 俯视整图下根本分不出敌我；现在只分阵营，识别成本最低。
+   * 颜色是**表现层**决定，不参与任何判定，也不写回原版数据。
+   */
+  playerColor: 0x2f6fd0,          // 我方：蓝
+  enemyColor: 0xc0392b,           // 敌方：红（所有非我方势力统一）
+  emptyFactionColor: 0x4b5058,    // 空城地面环：压暗的灰（不抢眼）
+  /** P6 起不再使用：保留常量仅为兼容旧引用，配色已收敛为阵营三态。 */
   palette: Object.freeze([
     0xc0504d, 0x4f81bd, 0x4f9d69, 0x9b59b6, 0x16a0a0, 0xd17a2c,
     0x7f8c8d, 0xb0528f, 0x5b7f3a, 0x3f6fb5, 0xa33f3f, 0x8a6d3b,
@@ -137,11 +155,25 @@ export function classifyFaction(ownerId, playerOwnerId) {
   return 'other';
 }
 
-/** 颜色只由 factionId 决定；同一 ID 在任何时刻恒定。 */
+/**
+ * 颜色只由「阵营三态」决定，同一 ID 在任何时刻恒定：
+ *   0 / 无效 owner       -> 空城灰
+ *   === playerOwnerId    -> 我方蓝
+ *   其它                 -> 敌方红
+ * playerOwnerId 取不到时（未进剧本，3D 层此时也不显示）没有"我方"概念，
+ * 非空城一律按敌方红处理，不猜一个势力当玩家。
+ */
 export function factionColor(ownerId, playerOwnerId) {
   if (!ownerId) return FLAG_CONFIG.emptyFlagColor;
   if (ownerId === playerOwnerId) return FLAG_CONFIG.playerColor;
-  return FLAG_CONFIG.palette[(ownerId - 1) % FLAG_CONFIG.palette.length];
+  return FLAG_CONFIG.enemyColor;
+}
+
+/** 城市地面阵营环的颜色：比旗帜略暗，避免抢城市本体的注意力。 */
+export function factionRingColor(ownerId, playerOwnerId) {
+  if (!ownerId) return FLAG_CONFIG.emptyFactionColor;
+  if (ownerId === playerOwnerId) return FLAG_CONFIG.playerColor;
+  return FLAG_CONFIG.enemyColor;
 }
 
 /** 稳定哈希，用于旗帜纹样与装饰物摆放（表现层确定性，不是游戏数据）。 */

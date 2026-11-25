@@ -15,7 +15,7 @@ import { EventManager } from '../original/site/p1/core/EventManager.mjs';
 import { GameAdapter } from '../original/site/p1/core/GameAdapter.mjs';
 import { CoordinateSystem } from '../original/site/p1/core/CoordinateSystem.mjs';
 import { MapCoordinateSystem } from '../original/site/p2/MapCoordinateSystem.mjs';
-import { ORIGINAL_MAP, KEY_CODES, INPUT_TYPE, classifyFaction, factionColor, FLAG_CONFIG } from '../original/site/p2/config.mjs';
+import { ORIGINAL_MAP, KEY_CODES, INPUT_TYPE, classifyFaction, factionColor, factionRingColor, FLAG_CONFIG } from '../original/site/p2/config.mjs';
 import { ORIGINAL_INPUT } from '../original/site/p1/core/config.mjs';
 
 const core = makeRealCore();
@@ -144,9 +144,20 @@ test('测试3 空城 / 玩家 / 其它势力分类只由 ownerId 决定', () => 
   assert.equal(classifyFaction(player + 1, player), 'other');
   assert.equal(factionColor(0, player), FLAG_CONFIG.emptyFlagColor);
   assert.equal(factionColor(player, player), FLAG_CONFIG.playerColor);
-  // 同一 ID 颜色恒定（不随调用次数变化），不同 ID 应有区分
-  assert.equal(factionColor(2, player), factionColor(2, player));
-  assert.notEqual(factionColor(2, player), factionColor(3, player));
+  // P6 §8.1：阵营收敛为三态 —— 任何非玩家势力都是同一个"敌方红"
+  assert.equal(factionColor(player + 1, player), FLAG_CONFIG.enemyColor);
+  // 固定 ID 也要按"是否恰好是我方"取期望值，不能假设 1/7/19 都不是玩家（剧本不同会变）
+  for (const id of [1, 7, 19]) {
+    const expected = id === player ? FLAG_CONFIG.playerColor : FLAG_CONFIG.enemyColor;
+    assert.equal(factionColor(id, player), expected, `owner ${id} 颜色`);
+  }
+  // 三态颜色必须互不相同，否则"一眼分敌我"这条验收无法成立
+  const three = new Set([FLAG_CONFIG.playerColor, FLAG_CONFIG.enemyColor, FLAG_CONFIG.emptyFlagColor]);
+  assert.equal(three.size, 3);
+  // 地面环与旗帜同色系（空城环压暗，其余与我方/敌方一致）
+  assert.equal(factionRingColor(player, player), FLAG_CONFIG.playerColor);
+  assert.equal(factionRingColor(player + 1, player), FLAG_CONFIG.enemyColor);
+  assert.equal(factionRingColor(0, player), FLAG_CONFIG.emptyFactionColor);
 });
 
 // ============================================================ 测试 4：坐标体系

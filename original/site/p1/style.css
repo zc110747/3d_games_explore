@@ -140,3 +140,10 @@ body[data-sango-view="game"] #p1-legacy { display: none; }
   #p1-panel { width: calc(100vw - 28px); }
   #p6-menu-hint { display: none; }
 }
+
+/* 战斗场景：君主/光标属于战略地图信息，战斗里有自己的 HUD。
+   留着会让顶栏在 1600px 宽下折成两行，压住战斗地图上沿（实测会吃掉点击）。 */
+body[data-sango-scene="battle"] #p6-king,
+body[data-sango-scene="battle"] #p6-cursor {
+  display: none;
+}

@@ -3,11 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<<<<<<< HEAD
-<title>三国霸业 · 3D 重制 P7 最终验收版</title>
-=======
-<title>三国霸业 · 3D 重制</title>
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
+<title>三国霸业 · 三维重制</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%230c0e11'/%3E%3Ctext x='16' y='24' font-size='21' text-anchor='middle' fill='%23e0b04a'%3E%E9%9C%B8%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="p1/style.css">
@@ -16,10 +12,7 @@
 <link rel="stylesheet" href="p4/style.css">
 <link rel="stylesheet" href="p5/style.css">
 <link rel="stylesheet" href="p6/style.css">
-<<<<<<< HEAD
 <link rel="stylesheet" href="p7/style.css">
-=======
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
 <script type="importmap">
 {
   "imports": {
@@ -40,25 +33,20 @@
   <!-- ===================== HTML UI 层 ===================== -->
   <div id="p1-ui" data-p1-ui>
     <div id="p1-toolbar">
-<<<<<<< HEAD
-      <span class="p1-title">三国霸业 · P7 最终验收</span>
-=======
-      <span class="p1-title">三国霸业 · 三维</span>
+      <span class="p1-title">三国霸业 · 三维重制</span>
       <span id="p6-king" class="p1-chip">君主 —</span>
       <span id="p6-turn" class="p1-chip">—</span>
       <span id="p6-cursor" class="p1-chip">光标 —</span>
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
       <span id="p1-phase" class="p1-chip">启动中</span>
       <span id="p3-chip" class="p1-chip">城市 UI 待命</span>
       <span id="p4-chip" class="p1-chip">战斗待命</span>
       <span id="p5-chip" class="p1-chip">操作待命</span>
-<<<<<<< HEAD
       <span id="p6-chip" class="p1-chip">整合待命</span>
       <span id="p7-chip" class="p1-chip">性能待命</span>
       <button type="button" class="p1-btn" id="p6-toggle-saves">存档</button>
       <button type="button" class="p1-btn" id="p7-toggle-perf">性能</button>
       <button type="button" class="p1-btn" id="p2-toggle-panel">地图调试</button>
-      <button type="button" class="p1-btn" id="p1-toggle-panel">P1 面板</button>
+      <button type="button" class="p1-btn" id="p1-toggle-panel">运行状态</button>
       <button type="button" class="p1-btn" id="p1-toggle-legacy">原版画面</button>
     </div>
 
@@ -73,7 +61,7 @@
       <p id="p6-save-gate" class="p6-gate"></p>
     </section>
 
-    <section id="p2-panel" class="p1-card" data-p1-ui-block></section>
+    <section id="p2-panel" class="p1-card hidden" data-p1-ui-block></section>
 
     <!-- P7：性能看板（只读诊断；不承载任何游戏操作） -->
     <section id="p7-perf" hidden data-p1-ui-block>
@@ -81,20 +69,17 @@
       <dl id="p7-perf-list"></dl>
       <p class="p7-note">GPU 时间与显存占用浏览器不暴露，面板如实留空，不做估算填充。</p>
     </section>
-    <div id="p2-hint">3D 战略地图 · 左键拖动 · 滚轮缩放 · 点击城市 = 原版选城（己方城进入城市管理）</div>
-    <div id="p6-hint">战略地图 · 点击城市进入管理 · 「存档」面板使用原版 ac()/oc()</div>
-=======
-      <button type="button" class="p1-btn" id="p2-toggle-panel">调试</button>
-      <button type="button" class="p1-btn" id="p1-toggle-panel">运行状态</button>
-      <button type="button" class="p1-btn" id="p1-toggle-legacy">原版画面</button>
-    </div>
-
-    <section id="p2-panel" class="p1-card hidden" data-p1-ui-block></section>
     <div id="p2-hint">点击 = 移动原版光标（再点同格 = 确认） · 方向键/WASD 移动 · E 确认 · Q 返回 · 拖动平移 · 滚轮缩放</div>
+    <div id="p6-hint">战略地图 · 点击城市进入管理 · 「存档」面板使用原版 ac()/oc()</div>
+    <!-- P6 §8.1：阵营图例（颜色是表现层决定，不参与任何判定） -->
+    <div id="p2-legend" aria-label="阵营图例">
+      <span><i class="p2-dot p2-dot-mine"></i>我方</span>
+      <span><i class="p2-dot p2-dot-foe"></i>敌方</span>
+      <span><i class="p2-dot p2-dot-empty"></i>空城</span>
+    </div>
 
     <!-- P6 底部操作条：与掌机/原版 zs() 同一套操作，按键直接投递原版键码 -->
     <div id="p6-ops" data-p6-ops></div>
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
 
     <section id="p1-panel" class="p1-card hidden" data-p1-ui-block>
       <h2>运行状态</h2>
@@ -163,7 +148,7 @@
       <div id="help-note">触摸：轻点选择/确认 · 拖动滚动列表 · 轻点画面跳过动画<br>键盘：<b>W/A/S/D</b> 上左下右 · <b>E</b> 确认 · <b>Q</b> 返回 · 方向键/Enter/Esc 同样可用 · Tab 帮助 · M 形势图</div>
     </div>
     <div id="p6-menu-hint">进入剧本后自动切换为 3D 战略地图</div>
-    <div id="p6-peek-hint" hidden>原版画面（信息 / 形势图）· 按任意键或点击返回 3D 地图</div>
+    <div id="p6-peek-hint" hidden>原版画面（信息 / 形势图 / 菜单）· 按任意键或点击返回 3D 地图</div>
   </div>
 </div>
 

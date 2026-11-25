@@ -1,6 +1,5 @@
 /**
-<<<<<<< HEAD
- * P6 统一配置 —— 全局整合阶段的常量与「事实来源」标注。
+ * P6 统一配置 —— 全局整合（存档 / 生命周期 / 错误分类）+ 视图两态与 3D 操作条。
  *
  * 本文件只放**已核实的原版事实**与表现层自己的决策，不放任何推测值：
  *   - 存档格式：sgby.min.js L60329 `Rn=[83,71,66,51]`（"SGB3"）+ 版本字节 4
@@ -15,7 +14,11 @@
  * 表现层决策（不是原版事实，显式标注）：
  *   - 城市管理沿用 P3 的 HTML 覆盖层，**不**新建 Three.js 场景（P6 文档允许）。
  *   - 3D 表现配置存独立 localStorage 键，与原版存档完全分离。
+ *   - 视图两态（menu = 原版 2D / game = 3D）判据来自 GameAdapter.getInputPhase().kind（只读诊断）。
+ *   - 底部操作条只映射原版已有键码（p1/core/config.mjs ORIGINAL_INPUT.keys）；
+ *     光标高亮是新增的可视标记，不参与命中/判定。
  */
+import { ORIGINAL_INPUT } from '../p1/core/config.mjs';
 
 export const P6_VERSION = '6.0.0-p6';
 
@@ -87,22 +90,13 @@ export const ERROR_KIND = Object.freeze({
   RECOVERABLE: 'recoverable',
   FATAL: 'fatal',
 });
-=======
- * P6 表现层配置 —— 视图模式与 3D 主界面操作条。
- *
- * 本文件只含「表现层/协议映射」参数，不含任何游戏规则：
- *   - 视图模式判据来自 GameAdapter.getInputPhase().kind（只读诊断）；
- *   - 按钮只映射到原版已有键码（见 p1/core/config.mjs ORIGINAL_INPUT.keys）；
- *   - 光标高亮是新增的可视标记，不参与命中/判定。
- */
-import { ORIGINAL_INPUT } from '../p1/core/config.mjs';
 
-export const P6_VERSION = '6.0.0-p6';
+// ---------------------------------------------------------------- 视图两态
 
 export const VIEW_MODE = Object.freeze({ MENU: 'menu', GAME: 'game' });
 
 /**
- * 视图切换判据（对应需求 1）。
+ * 视图切换判据。
  *
  * kind 的取值来自 GameAdapter 对 waitMsg 调用栈的只读识别：
  *   zs     = 原版战略地图选城循环（真正"进入主界面"）
@@ -131,7 +125,8 @@ export const CURSOR_STYLE = Object.freeze({
 
 /**
  * 3D 主界面底部操作条。
- * key 一律是 ORIGINAL_INPUT.keys 里的原版键码，不新增自定义动作。
+ * key 一律是 ORIGINAL_INPUT.keys 里的原版键码；action 用于原版已经做成 DOM 按钮、
+ * 没有对应键码的动作（菜单面板 / 画面缩放）。
  */
 const K = ORIGINAL_INPUT.keys;
 export const OPS_LAYOUT = Object.freeze([
@@ -158,7 +153,18 @@ export const OPS_LAYOUT = Object.freeze([
       Object.freeze({ key: K.cancel, label: '返回', variant: 'cancel', hint: '原版 Q / Esc' }),
     ]),
   }),
+  /**
+   * 原版还有「菜单」与画面缩放，但它们没有键码（原版是 DOM 按钮/缩放控件），
+   * 所以这里用 action 而不是 key：语义等价，且不改动原版状态机。
+   */
+  Object.freeze({
+    id: 'system',
+    buttons: Object.freeze([
+      Object.freeze({ action: 'menu', label: '菜单', hint: '原版右上角「菜单」：云存档 / MOD / 关于' }),
+      Object.freeze({ action: 'zoomOut', label: '－', hint: '缩小视野（等价原版画面缩放 −）' }),
+      Object.freeze({ action: 'zoomIn', label: '＋', hint: '放大视野（等价原版画面缩放 ＋）' }),
+    ]),
+  }),
 ]);
 
 export const KEY_CODES = K;
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19

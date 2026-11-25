@@ -266,7 +266,17 @@ try {
   };
 
   // ---------------------------------------------------------------- 0 预热
+  // P6 起页面默认停在原版 2D 主界面，3D 渲染是**暂停**的；不先钉住 3D 视图，
+  // 测到的就是"暂停后的 rAF 节拍"（曾出现空载 59fps 其实一帧没画的假数据）。
+  const forced = await evaluate(`(() => {
+    if (!window.__P6__ || !window.__P6__.setView) return 'no-p6';
+    window.__P6__.setView('game', true);
+    return document.body.dataset.sangoView;
+  })()`);
+  out.notes.push(`测量前固定视图：${forced}`);
   await sleep(3500);
+  const appFps0 = await evaluate('window.__P7__ ? +window.__P7__.frameStats().fps.toFixed(2) : null');
+  out.notes.push(`应用内帧统计（测量前）：${appFps0}fps`);
 
   // ---------------------------------------------------------------- 1 战略地图空闲
   out.scenarios.idleWorld = {

@@ -28,22 +28,19 @@ import { P4_VERSION } from '../p4/config.mjs';
 import { createBattleOps } from '../p5/boot.mjs';
 import { P5_VERSION, PHASES } from '../p5/config.mjs';
 import { splitMenuByRect } from '../p5/BattleFlowController.mjs';
-<<<<<<< HEAD
 // P6：全局整合（统一入口 / 场景编排 / 状态同步 / 存档 / 异常）
 import { AppLifecycle } from '../p6/AppLifecycle.mjs';
 import { createIntegration } from '../p6/boot.mjs';
-import { P6_VERSION } from '../p6/config.mjs';
 import { PresentationStore } from '../p6/PresentationStore.mjs';
+// P6：视图两态（原版 2D 主界面 / 3D）与 3D 底部操作条
+import { ViewMode } from '../p6/ViewMode.mjs';
+import { WorldOps } from '../p6/WorldOps.mjs';
+import { VIEW_MODE, P6_VERSION } from '../p6/config.mjs';
 // P7：性能观测 / 自适应分辨率 / 原版一致性校验（全部只读，不写游戏状态）
 import { PerfMonitor } from '../p7/PerfMonitor.mjs';
 import { AdaptiveResolution } from '../p7/AdaptiveResolution.mjs';
 import { ConsistencyProbe } from '../p7/ConsistencyProbe.mjs';
 import { P7_VERSION, CONTEXT_LOST_CONFIG, ADAPTIVE_CONFIG } from '../p7/config.mjs';
-=======
-import { ViewMode } from '../p6/ViewMode.mjs';
-import { WorldOps } from '../p6/WorldOps.mjs';
-import { VIEW_MODE, P6_VERSION } from '../p6/config.mjs';
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
 
 const $ = (id) => document.getElementById(id);
 const logEl = $('p1-log');
@@ -107,12 +104,9 @@ async function boot() {
   let cityManager = null;
   let battleManager = null;
   let battleOps = null;
-<<<<<<< HEAD
   let integration = null;
-=======
   let viewMode = null;
   let worldOps = null;
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
   let scenesReady = false;   // 防止 RenderManager 构造期 resize 访问尚未初始化的 scenes
 
   // P6：统一启动入口。每个初始化阶段只跑一次，重复执行会立刻报错而不是静默双开。
@@ -1298,13 +1292,14 @@ async function boot() {
       const n = syncAllVisuals();
       log(`[P6] 进入 3D 前全量同步：${n} 城（旗帜/城市归属按原版最新数据）`);
     } else {
-      // 主菜单阶段不需要持续渲染（省电），但要保留至少一帧，
-      // 让 WebGL 可用性与 drawCall 统计仍然可验证（P6 起 3D 层默认隐藏）。
+      // 主菜单阶段不需要持续渲染（省电），但必须保留**一帧**：
+      // WebGL 可用性、drawCall/资源统计仍要可验证（P6 起 3D 层默认隐藏）。
+      // 早先用两层 requestAnimationFrame 等两帧再暂停，会和「视图已经切回 game」
+      // 赛跑（异步窗口内切回来就会被误暂停），也破坏了「全站只有一个自续循环」的静态校验。
+      // 现在改成同步：恢复 -> 渲染一帧 -> 立刻暂停，结果确定且不引入第二个 rAF 调度。
       renderManager.resume();
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        if (viewMode && viewMode.mode === VIEW_MODE.GAME) return;   // 已切回 3D
-        renderManager.pause();
-      }));
+      try { scenes.render(renderManager); } catch (e) { log(`[P6] 原版画面期间保留一帧失败：${e.message}`); }
+      renderManager.pause();
     }
     if (worldOps) worldOps.setActive(isGame && scenes.currentId === SCENE_IDS.WORLD);
     renderStatus();
@@ -1447,7 +1442,6 @@ async function boot() {
   });
   log(`P5 战斗操作已装配：接管 ${core.p5 ? core.p5.widgetNames.join(' / ') : '（内核无 p5，操作仍在 2D）'}`);
 
-<<<<<<< HEAD
   // ---------------------------------------------------------- P6 全局整合
   // 装配顺序即依赖顺序：UI 栈 -> 表现配置 -> 场景编排 -> 状态同步 -> 存档 -> 异常。
   // 所有 getXxx 都是惰性读取，避免「装配时场景还没建好」的时序问题。
@@ -1488,8 +1482,10 @@ async function boot() {
     + ` · 上下文丢失可恢复`);
 
   log('提示：点「原版画面」在主菜单开新局，进入剧本后点击己方城市即可打开城市管理');
-=======
   // ---------------------------------------------------------- P6 视图模式 + 3D 主界面操作
+  // 顺序：先建操作条（applyView 会读 worldOps），再启动视图判定。
+  // 注意：默认视角是原版 2D 主界面（body=menu），此时 3D 渲染暂停省电；
+  //       进入剧本 zs() 后 viewMode 自动切 game，渲染恢复。
   worldOps = new WorldOps({
     THREE, adapter, input, scene: mapScene, coordinate: mapCoordinate,
     worldCamera, cityManager,
@@ -1502,7 +1498,7 @@ async function boot() {
       if (on) {
         viewMode.setHold(true);
         viewMode.force(VIEW_MODE.MENU);
-        log('[P6] 打开原版画面（信息/形势图）：按任意键返回 3D 地图');
+        log('[P6] 打开原版画面（信息/形势图/菜单）：按任意键或点击返回 3D 地图');
       } else {
         viewMode.setHold(false);
         viewMode.poll();
@@ -1512,6 +1508,17 @@ async function boot() {
     log: (msg) => log(`[P6] ${msg}`),
   });
   worldOps.start();
+  // 场景一离开世界地图（进战斗 / 城市覆盖层）就必须让出底部：
+  // p6-ops 是 z-index 11 的 DOM 覆盖层，留着会挡住战斗地图的点击
+  // （实测：点部队 0 次被 P5 接收，反而点开了原版战斗菜单 bo）。
+  events.on(EVENTS.SCENE_CHANGED, ({ to }) => {
+    if (!worldOps) return;
+    worldOps.setActive((!viewMode || viewMode.mode === VIEW_MODE.GAME) && to === SCENE_IDS.WORLD);
+    // 顶栏宽度按场景收敛：战斗里「君主/光标」是战略地图的信息，留着会让工具栏折成两行，
+    // 实测会盖住战斗地图上沿（部队投影点落在工具栏上，点击直接被顶栏吃掉）。
+    document.body.dataset.sangoScene = to;
+  });
+  document.body.dataset.sangoScene = scenes.currentId || SCENE_IDS.WORLD;
   viewMode = new ViewMode({
     adapter,
     onChange: applyView,
@@ -1522,7 +1529,6 @@ async function boot() {
   log(`P6 视图模式已装配：默认 ${viewMode.mode}（原版主界面不 3D 化），进入剧本 zs() 后切 3D`);
 
   log('提示：主菜单/选剧本/选君主都在原版 2D 界面完成；进入剧本后自动切换 3D，点格移动光标、再点同格确认');
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
   renderManager.resize();           // 触发 worldCamera.fit，保证整图可见
   // 原版在 DOMContentLoaded 时算过一次整数倍缩放，此时 p1/p6 样式可能还没生效；
   // 主动派发一次 resize 让它按最终布局重算（等价于用户拉一下窗口）。
@@ -1688,8 +1694,10 @@ async function boot() {
     switchScene,
   });
 
-<<<<<<< HEAD
-  /** P6 全局整合调试/自动化入口（场景编排 / 存档 / 一致性 / 异常）。 */
+  /**
+   * P6 调试/自动化入口：全局整合（场景编排 / 存档 / 一致性 / 异常）+ 视图两态 + 3D 操作条。
+   * 注意：setView 只切显示，不改变原版流程；pressKey/cursorTo 走原版输入协议（不伪造游戏结果）。
+   */
   window.__P6__ = Object.freeze({
     version: P6_VERSION,
     manager: integration,
@@ -1701,12 +1709,40 @@ async function boot() {
     errors: integration.errors,
     presentation: integration.presentation,
     lifecycle,
+    get view() { return viewMode; },
+    get ops() { return worldOps; },
     getStatus: () => integration.getStatus(),
-    getSnapshot: () => integration.getSnapshot(),
+    /**
+     * 合并快照：整合层字段 + 视图/操作条字段。
+     * `ops` 归 3D 操作条（视图层语义，测试用 ops.peeking 判「正在看原版全屏页」）；
+     * 整合层原有的战斗操作状态改名 `battleOps`，避免两边同名互相覆盖。
+     */
+    getSnapshot: () => {
+      const base = integration.getSnapshot();
+      return {
+        ...base,
+        battleOps: base.ops,
+        ops: worldOps ? worldOps.getSnapshot() : null,
+        view: viewMode ? { mode: viewMode.mode, held: viewMode.held, stats: { ...viewMode.stats } } : null,
+        bodyView: document.body.dataset.sangoView,
+        opsHidden: !!(document.getElementById('p6-ops') && document.getElementById('p6-ops').hidden),
+      };
+    },
+    /** 调试：钉住某个视图（hold=true 时暂停自动判定）。 */
+    setView: (mode, hold = false) => {
+      if (!viewMode) return null;
+      if (hold) viewMode.setHold(true);
+      return viewMode.force(mode);
+    },
+    release: () => { if (!viewMode) return null; viewMode.setHold(false); return viewMode.poll(); },
+    pressKey: (param) => adapter.pressKey(param),
+    cursorTo: (col, row) => adapter.requestCursorTo(col, row),
+    /** 3D 语义的点击（供自动化测试直接调用，等价于真实鼠标点格子）。 */
+    clickCell: (col, row) => (worldOps ? worldOps.handleMapClick({ cell: { col, row } }) : null),
+    refresh: () => { if (worldOps) worldOps.refresh(); },
     /** 场景编排语义入口（等价于真实流程，但由测试显式触发）。 */
     toWorld: (reason) => integration.director.switchTo('world', { reason: reason || 'P6 测试' }),
     toBattle: (reason) => integration.director.switchTo('battle', { reason: reason || 'P6 测试' }),
-    switchScene,
     /** 存档：全部经原版 ac()/oc()；返回值如实标注是否被接受。 */
     saveSlot: (slot, reason) => integration.saves.save(slot, { reason: reason || 'test' }),
     loadSlot: (slot, reason) => integration.saves.load(slot, { reason: reason || 'test' }),
@@ -1767,46 +1803,14 @@ async function boot() {
       cities: core.Dn.g_Cities.map((c) => `${c.Belong}:${c.Money}:${c.Food}:${c.Farming}`).join(','),
       persons: core.Dn.g_Persons.map((p) => `${p.Belong}:${p.Arms}`).join(','),
     }),
-=======
-  /**
-   * P6 视图/操作调试入口。
-   * 注意：setView 只切显示，不改变原版流程；pressKey/cursorTo 走原版输入协议。
-   */
-  window.__P6__ = Object.freeze({
-    version: P6_VERSION,
-    get view() { return viewMode; },
-    get ops() { return worldOps; },
-    getSnapshot: () => ({
-      view: viewMode ? { mode: viewMode.mode, held: viewMode.held, stats: { ...viewMode.stats } } : null,
-      ops: worldOps ? worldOps.getSnapshot() : null,
-      bodyView: document.body.dataset.sangoView,
-      opsHidden: !!(document.getElementById('p6-ops') && document.getElementById('p6-ops').hidden),
-    }),
-    /** 调试：钉住某个视图（hold=true 时暂停自动判定）。 */
-    setView: (mode, hold = false) => {
-      if (!viewMode) return null;
-      if (hold) viewMode.setHold(true);
-      return viewMode.force(mode);
-    },
-    release: () => { if (!viewMode) return null; viewMode.setHold(false); return viewMode.poll(); },
-    pressKey: (param) => adapter.pressKey(param),
-    cursorTo: (col, row) => adapter.requestCursorTo(col, row),
-    /** 3D 语义的点击（供自动化测试直接调用，等价于真实鼠标点格子）。 */
-    clickCell: (col, row) => (worldOps ? worldOps.handleMapClick({ cell: { col, row } }) : null),
-    refresh: () => { if (worldOps) worldOps.refresh(); },
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
     runSmoke,
     switchScene,
   });
 
-<<<<<<< HEAD
   lifecycle.setState('running');
   renderStatus();
-  return window.__P1__;}
-=======
   return window.__P1__;
 }
->>>>>>> 398c3b1abf079205e39970d0b07db81b84d61f19
 
 boot().catch((e) => {
   document.body.dataset.p1Status = 'error';
