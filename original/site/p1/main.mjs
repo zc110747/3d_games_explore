@@ -921,6 +921,21 @@ async function boot() {
     THREE, adapter, input, scene: mapScene, coordinate: mapCoordinate,
     worldCamera, cityManager,
     opsHost: $('p6-ops'),
+    // 帮助/形势图是原版画在 2D 画布上的全屏页：临时切回原版画面，任意键返回
+    onPeek: (on) => {
+      const hint = $('p6-peek-hint');
+      if (!viewMode) return;
+      if (hint) hint.hidden = !on;
+      if (on) {
+        viewMode.setHold(true);
+        viewMode.force(VIEW_MODE.MENU);
+        log('[P6] 打开原版画面（信息/形势图）：按任意键返回 3D 地图');
+      } else {
+        viewMode.setHold(false);
+        viewMode.poll();
+        log('[P6] 关闭原版画面，恢复自动视图判定');
+      }
+    },
     log: (msg) => log(`[P6] ${msg}`),
   });
   worldOps.start();

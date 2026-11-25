@@ -17,7 +17,7 @@
  *
  * 本模块只做「把用户动作翻成原版输入」+「把原版状态显示出来」，不含任何规则。
  */
-import { CURSOR_STYLE, OPS_LAYOUT } from './config.mjs';
+import { CURSOR_STYLE, OPS_LAYOUT, KEY_CODES } from './config.mjs';
 
 function safe(fn, fallback = null) {
   try { return fn(); } catch (_) { return fallback; }
@@ -36,7 +36,7 @@ export class WorldOps {
    * @param {Function} [deps.log]
    */
   constructor({ THREE, adapter, input, scene, coordinate, worldCamera = null, cityManager = null,
-    opsHost = null, log = () => {} }) {
+    opsHost = null, onPeek = null, log = () => {} }) {
     if (!THREE || !adapter || !scene || !coordinate) throw new TypeError('WorldOps 依赖不完整');
     this.THREE = THREE;
     this.adapter = adapter;
@@ -46,16 +46,18 @@ export class WorldOps {
     this.worldCamera = worldCamera;
     this.cityManager = cityManager;
     this.opsHost = opsHost || (typeof document !== 'undefined' ? document.getElementById('p6-ops') : null);
+    this.onPeek = onPeek;          // (on:boolean) => void：临时显示原版 2D 画面
     this.log = log;
 
     this.active = false;
     this.cursor = null;          // 最近一次观测到的原版光标
     this.lastClick = null;
-    this.stats = { clicks: 0, moved: 0, confirms: 0, keys: 0, rejected: 0, lastReason: null };
+    this.stats = { clicks: 0, moved: 0, confirms: 0, keys: 0, rejected: 0, peeks: 0, lastReason: null };
     this._timer = null;
     this._marker = null;
     this._buttons = new Map();
     this._dom = {};
+    this._peekCleanup = null;
   }
 
   // ------------------------------------------------------------ 生命周期
@@ -69,6 +71,7 @@ export class WorldOps {
 
   stop() {
     if (this._timer) { clearInterval(this._timer); this._timer = null; }
+    this._clearPeekExit();
     this._disposeMarker();
     if (this.opsHost) this.opsHost.replaceChildren();
     this._buttons.clear();
@@ -146,6 +149,9 @@ export class WorldOps {
   // ------------------------------------------------------------ 操作
   /** 投递一次原版按键（0 表示未投递，reason 说明原因）。 */
   sendKey(param) {
+    // 帮助（38）/ 形势图（51）在原版里是画到 2D 画布上的全屏页，
+    // 3D 视图看不到，所以先投递键码，再临时切回原版画面让用户读，任意键自动返回。
+    if (param === KEY_CODES.help || param === KEY_CODES.chart) return this.peekOriginal(param);
     const r = safe(() => this.adapter.pressKey(param), null);
     if (r && r.sent) {
       this.stats.keys++;
@@ -159,11 +165,61 @@ export class WorldOps {
   }
 
   /**
+   * 帮助 / 形势图：投递原版键码后临时显示原版 2D 画面。
+   * 恢复靠**用户这一次按键/点击**被原版自己消费（zs() 里 i=1 时任意键退出），
+   * 本模块只负责把视图切回来，绝不额外补发按键（多发一次 39 会变成确认选城）。
+   */
+  peekOriginal(param) {
+    const r = safe(() => this.adapter.pressKey(param), null);
+    if (!r || !r.sent) {
+      this.stats.rejected++;
+      this.stats.lastReason = r ? r.reason : '适配层不可用';
+      return r;
+    }
+    this.stats.keys++;
+    this.stats.peeks++;
+    if (this.onPeek) { try { this.onPeek(true); } catch (_) { /* 忽略 */ } }
+    this._bindPeekExit();
+    return r;
+  }
+
+  _bindPeekExit() {
+    this._clearPeekExit();
+    if (typeof window === 'undefined') return;
+    const exit = () => this._endPeek();
+    // capture：先切回 3D 再让原版消费这次按键，避免视图与状态错位
+    window.addEventListener('keydown', exit, true);
+    window.addEventListener('pointerdown', exit, true);
+    this._peekCleanup = () => {
+      window.removeEventListener('keydown', exit, true);
+      window.removeEventListener('pointerdown', exit, true);
+    };
+  }
+
+  _clearPeekExit() {
+    if (this._peekCleanup) { this._peekCleanup(); this._peekCleanup = null; }
+  }
+
+  _endPeek() {
+    if (!this._peekCleanup) return;
+    this._clearPeekExit();
+    // 关闭画面这次点击/按键不要顺手移动光标（pointerup 会再触发一次 click）
+    this._ignoreClickUntil = (typeof performance !== 'undefined' ? performance.now() : Date.now()) + 320;
+    if (this.onPeek) { try { this.onPeek(false); } catch (_) { /* 忽略 */ } }
+    this.log('已返回 3D 地图（原版画面由这一次按键关闭）');
+  }
+
+  /**
    * 地图点击（由 MapInteraction.pickCell 解析后的逻辑格）。
    * 与原版一致：点别处=移动光标；点光标所在格=确认。
    */
   handleMapClick({ cell, cityId = null } = {}) {
     if (!this.active || !cell) return null;
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    if (this._ignoreClickUntil && now < this._ignoreClickUntil) {
+      this._ignoreClickUntil = 0;
+      return null;                       // 这是"关闭原版画面"的那次点击，不当作地图操作
+    }
     this.stats.clicks++;
     const cur = this.cursor || safe(() => this.adapter.getCityCursor(), null);
     const same = cur && cur.setx === cell.col && cur.sety === cell.row;
@@ -241,6 +297,7 @@ export class WorldOps {
       stats: { ...this.stats },
       buttons: [...this._buttons.keys()],
       markerVisible: !!(this._marker && this._marker.visible),
+      peeking: !!this._peekCleanup,
     };
   }
 }

@@ -73,3 +73,21 @@
 
 /* 三个阶段的芯片只作为调试信息保留在「运行状态」面板里，顶栏不显示，保持主界面干净 */
 #p3-chip, #p4-chip, #p5-chip { display: none; }
+
+/* 「信息 / 查找」临时回落到原版 2D 画面时的提示条 */
+#p6-peek-hint {
+  position: absolute;
+  left: 50%;
+  top: 12px;
+  transform: translateX(-50%);
+  z-index: 9;
+  padding: 6px 16px;
+  border-radius: 999px;
+  background: rgba(96, 58, 20, .92);
+  border: 1px solid rgba(224, 190, 116, .85);
+  color: #ffe9a8;
+  font-size: 12.5px;
+  letter-spacing: .02em;
+  pointer-events: none;
+}
+#p6-peek-hint[hidden] { display: none; }

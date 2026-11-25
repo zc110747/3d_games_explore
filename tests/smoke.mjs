@@ -467,6 +467,45 @@ try {
   }
 
   // ==================================================================
+  // P6：底部「信息 / 查找」是原版画在 2D 画布上的全屏页 —— 3D 视图下临时切回 2D
+  // ==================================================================
+  const peekClicked = await evaluate(`(() => {
+    const b = [...document.querySelectorAll('#p6-ops .p6-key')].find((x) => x.dataset.p6Key === '51');
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  await sleep(700);
+  const peekState = JSON.parse(await evaluate(`JSON.stringify({
+    body: document.body.dataset.sangoView,
+    hint: !document.getElementById('p6-peek-hint')?.hidden,
+    peeking: window.__P6__.getSnapshot().ops?.peeking,
+    stage: getComputedStyle(document.getElementById('p1-stage')).display !== 'none'
+  })`));
+  check('「查找」按钮打开原版形势图（临时切回原版 2D 画面）',
+    peekClicked === true && peekState.body === 'menu' && peekState.hint === true
+    && peekState.peeking === true && peekState.stage === false,
+    `body=${peekState.body} hint=${peekState.hint} peeking=${peekState.peeking}`);
+
+  // 任意键返回：原版 zs() 在帮助/形势图状态里「任意键」只是退出该页，不会返回上层
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyDown', key: 'q', code: 'KeyQ', windowsVirtualKeyCode: 81, nativeVirtualKeyCode: 81,
+  });
+  await send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'q', code: 'KeyQ', windowsVirtualKeyCode: 81, nativeVirtualKeyCode: 81,
+  });
+  await sleep(900);
+  const peekBack = JSON.parse(await evaluate(`JSON.stringify({
+    body: document.body.dataset.sangoView,
+    hint: !document.getElementById('p6-peek-hint')?.hidden,
+    phase: window.__P2__.adapter.getInputPhase().kind,
+    peeking: window.__P6__.getSnapshot().ops?.peeking
+  })`));
+  check('任意键关闭原版画面并回到 3D 地图',
+    peekBack.body === 'game' && peekBack.hint === false && peekBack.peeking === false,
+    `body=${peekBack.body} hint=${peekBack.hint} phase=${peekBack.phase}`);
+
+  // ==================================================================
   // P3 城市管理：真实点击己方城市 -> HTML 界面 -> 原版 mi() 执行 -> 数值真变
   // ==================================================================
   const p3Status = async () => JSON.parse(await evaluate('JSON.stringify(window.__P3__.getStatus())'));
